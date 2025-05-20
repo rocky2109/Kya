@@ -1,4 +1,3 @@
-# Exclude credentials and sensitive files
 config.py
 youtube_cookies.txt
 sessions/
