@@ -1,0 +1,13 @@
+# Exclude credentials and sensitive files
+config.py
+youtube_cookies.txt
+sessions/
+torrent_bot_db/
+*.db
+*.sqlite
+__pycache__/
+.env
+*.env
+# VS Code settings
+.vscode/
+*.log
