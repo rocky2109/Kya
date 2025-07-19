@@ -705,33 +705,26 @@ async def delete_all_tasks_handler(event):
     if user_id not in config.ADMIN_USER_IDS:
         await event.respond("❌ This command is restricted to administrators only.")
         return
-    
-    # Confirmation prompt
-    confirmation_msg = await event.respond(
-        "⚠️ **WARNING: This will delete ALL tasks for ALL users!**\n\n"
-        "This includes:\n"
-        "• All queued tasks\n"
-        "• All running tasks\n"
-        "• All task history\n"
-        "• All downloaded files\n\n"
-        "Reply with `CONFIRM DELETE` to proceed or `CANCEL` to abort.\n\n"
-        "*This action cannot be undone.*",
-        parse_mode='markdown'
-    )
-    
+
     try:
-        # Wait for user's reply
-        def check_reply(event):
-            return (event.sender_id == user_id and 
-                   event.is_reply and 
-                   event.reply_to_msg_id == confirmation_msg.id)
-        
-        # Wait for reply with timeout
-        reply_event = await client.wait_for(events.NewMessage, 
-                                           condition=check_reply, 
-                                           timeout=30)
-        
-        reply_text = reply_event.message.text.strip().upper()
+        # Wait for user's reply using conversation
+        async with client.conversation(user_id, timeout=30) as conv:
+            # Send the confirmation message
+            await conv.send_message(
+                "⚠️ **WARNING: This will delete ALL tasks for ALL users!**\n\n"
+                "This includes:\n"
+                "• All queued tasks\n"
+                "• All running tasks\n"
+                "• All task history\n"
+                "• All downloaded files\n\n"
+                "Reply with `CONFIRM DELETE` to proceed or `CANCEL` to abort.\n\n"
+                "*This action cannot be undone.*",
+                parse_mode='markdown'
+            )
+            
+            # Wait for reply
+            reply_event = await conv.get_response()
+            reply_text = reply_event.message.text.strip().upper()
         
         if reply_text == 'CONFIRM DELETE':
             # Proceed with deletion

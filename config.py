@@ -13,7 +13,8 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 # Optimized ZIP part sizes for better upload stability
-ZIP_PART_SIZE = int(1.8 * 1024**3)  # ~1.8GB (more conservative for stability)
+# Use 1.9GB for ZIP parts to stay well under Telegram's 2GB limit while maximizing efficiency
+ZIP_PART_SIZE = int(1.9 * 1024**3)  # ~1.9GB (closer to 2GB limit for efficiency)
 MAX_FILE_SIZE = 2 * 1024**3  # 2GB (Telegram's limit)
 
 # Large file upload configuration - enhanced for very large files

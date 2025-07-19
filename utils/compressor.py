@@ -63,6 +63,25 @@ logger = logging.getLogger(__name__)
 async def stream_compress(file_paths: List[str], zip_name: str, max_part_size: int, chat_id: int, task=None, client=None, task_manager=None) -> Tuple[List[Tuple[str, int]], Optional[str]]:
     """Stream compress files to disk with progress tracking - robust implementation"""
     
+    logger.info(f"Starting compression - max_part_size: {format_size(max_part_size)}")
+    
+    # For very large files or if zipstream has failed before, use fallback directly
+    total_input_size = 0
+    for file_path in file_paths:
+        if os.path.isfile(file_path):
+            total_input_size += os.path.getsize(file_path)
+        elif os.path.isdir(file_path):
+            for root, dirs, files in os.walk(file_path):
+                for file in files:
+                    full_path = os.path.join(root, file)
+                    if os.path.exists(full_path):
+                        total_input_size += os.path.getsize(full_path)
+    
+    # If total size is very large (>20GB) or zipstream is not available, use fallback directly
+    if total_input_size > 20 * 1024**3 or not HAS_ZIPSTREAM:
+        logger.info(f"Using fallback compression directly - input size: {format_size(total_input_size)}, zipstream available: {HAS_ZIPSTREAM}")
+        return await _fallback_compress(file_paths, zip_name, max_part_size, chat_id, task, client, task_manager)
+    
     if not HAS_ZIPSTREAM:
         # Fallback to simple zipfile compression
         return await _fallback_compress(file_paths, zip_name, max_part_size, chat_id, task, client, task_manager)
@@ -286,34 +305,8 @@ async def stream_compress(file_paths: List[str], zip_name: str, max_part_size: i
             total_chunks_written = 0
             logger.info("Starting to process zipstream chunks...")
             
-            # Validate that zipstream iterator is working
-            try:
-                first_chunk = next(iter(z))
-                if first_chunk:
-                    logger.info(f"zipstream iterator is working - first chunk size: {len(first_chunk)} bytes")
-                    # Put the first chunk back by recreating the iterator
-                    # Create a new zipstream object with the same files
-                    if hasattr(z, 'add'):
-                        z_new = zipstream.ZipStream()
-                        for file_path in valid_files:
-                            if os.path.isfile(file_path):
-                                if len(file_paths) == 1 and os.path.isdir(file_paths[0]):
-                                    base_dir = file_paths[0]
-                                    arcname = os.path.relpath(file_path, os.path.dirname(base_dir))
-                                else:
-                                    arcname = os.path.basename(file_path)
-                                z_new.add(file_path, arcname=arcname)
-                        z = z_new
-                    logger.info("Successfully recreated zipstream iterator")
-                else:
-                    logger.error("zipstream iterator returned empty first chunk")
-                    return [], "zipstream generated no content"
-            except StopIteration:
-                logger.error("zipstream iterator is empty - no chunks generated")
-                return [], "zipstream generated no chunks"
-            except Exception as e:
-                logger.warning(f"Could not test zipstream iterator: {e}, proceeding anyway")
-            
+            # Process zipstream chunks directly without validation to avoid iterator corruption
+            # The validation was causing the iterator to be consumed and recreated incorrectly
             for chunk in z:
                 chunk_len = len(chunk)
                 
@@ -432,6 +425,41 @@ async def stream_compress(file_paths: List[str], zip_name: str, max_part_size: i
                     logger.error(f"Failed to create ZIP file and no content: {e}")
                     return [], f"Failed to create ZIP file: {e}"
 
+        # Validate the created files to ensure they are not tiny/corrupt
+        total_zip_size = sum(size for _, size in part_paths)
+        expected_min_size = total_size * 0.01  # At least 1% of original size (very conservative)
+        
+        if total_zip_size < expected_min_size:
+            logger.error(f"Zipstream compression produced suspiciously small output: {format_size(total_zip_size)} from {format_size(total_size)} input")
+            logger.error(f"Expected minimum size: {format_size(expected_min_size)}, got: {format_size(total_zip_size)}")
+            logger.info("Falling back to standard zipfile compression")
+            # Clean up the bad files
+            for part_path, _ in part_paths:
+                try:
+                    if os.path.exists(part_path):
+                        os.remove(part_path)
+                        logger.debug(f"Removed bad zipstream output: {part_path}")
+                except Exception:
+                    pass
+            return await _fallback_compress(file_paths, zip_name, max_part_size, chat_id, task, client, task_manager)
+
+        # Additional validation: ensure each part is reasonable size (not tiny files)
+        for part_path, part_size in part_paths:
+            if part_size < 1024:  # Less than 1KB is suspicious for real content
+                logger.error(f"Detected tiny ZIP part: {part_path} ({format_size(part_size)})")
+                logger.info("Falling back to standard zipfile compression due to tiny parts")
+                # Clean up the bad files
+                for p_path, _ in part_paths:
+                    try:
+                        if os.path.exists(p_path):
+                            os.remove(p_path)
+                            logger.debug(f"Removed tiny zipstream output: {p_path}")
+                    except Exception:
+                        pass
+                return await _fallback_compress(file_paths, zip_name, max_part_size, chat_id, task, client, task_manager)
+        
+        logger.info(f"Zipstream compression validation passed - total size: {format_size(total_zip_size)} from {format_size(total_size)} input")
+
         # Final progress update
         if progress_msg and client:
             try:
@@ -475,7 +503,7 @@ async def stream_compress(file_paths: List[str], zip_name: str, max_part_size: i
         return [], f"Compression failed: {e}"
 async def _fallback_compress(file_paths: List[str], zip_name: str, max_part_size: int, chat_id: int, task=None, client=None, task_manager=None) -> Tuple[List[Tuple[str, int]], Optional[str]]:
     """Fallback compression using standard zipfile when zipstream is not available"""
-    logger.info("Using fallback compression with standard zipfile")
+    logger.info(f"Using fallback compression with standard zipfile - max_part_size: {format_size(max_part_size)}")
     
     temp_dir = os.path.join(TEMP_DIR, f"compress_{chat_id}_{int(time.time())}")
     os.makedirs(temp_dir, exist_ok=True)
@@ -486,13 +514,16 @@ async def _fallback_compress(file_paths: List[str], zip_name: str, max_part_size
         for file_path in file_paths:
             if os.path.isfile(file_path):
                 all_files.append(file_path)
+                logger.debug(f"Adding file for compression: {file_path} ({format_size(os.path.getsize(file_path))})")
             elif os.path.isdir(file_path):
                 for root, dirs, files in os.walk(file_path):
                     for file in files:
                         full_path = os.path.join(root, file)
                         all_files.append(full_path)
+                        logger.debug(f"Adding directory file for compression: {full_path}")
         
         if not all_files:
+            logger.error("No files found to compress in fallback mode")
             return [], "No files found to compress"
         
         total_size = sum(os.path.getsize(path) for path in all_files if os.path.exists(path))
@@ -597,6 +628,7 @@ async def _fallback_compress(file_paths: List[str], zip_name: str, max_part_size
             # Check if the final ZIP is actually too large and needs splitting
             if zip_size > max_part_size:
                 logger.warning(f"Created ZIP ({format_size(zip_size)}) exceeds max part size ({format_size(max_part_size)}), splitting into parts")
+                logger.info(f"Will create parts with naming: {zip_name}.zip.001, {zip_name}.zip.002, etc.")
                 
                 # Split the large ZIP file into multiple parts
                 part_paths_split = await _split_large_zip_file(zip_path, zip_name, max_part_size, temp_dir, progress_msg, client, chat_id)
