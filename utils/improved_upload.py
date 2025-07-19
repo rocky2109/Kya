@@ -6,7 +6,8 @@ import gc
 import psutil
 from typing import List, Tuple, Optional
 
-from telethon.errors import FloodWaitError, TimeoutError, ConnectionError, NetworkError
+from telethon.errors import FloodWaitError, TimeoutError
+# Note: ConnectionError and NetworkError are built-in Python exceptions, not from telethon
 from utils.formatting import format_size, format_time
 
 logger = logging.getLogger(__name__)
@@ -255,7 +256,7 @@ async def upload_zip_parts_improved(client, chat_id, part_paths, task=None, task
                         pass
                     raise TimeoutError(f"Upload timeout after {upload_timeout} seconds")
                     
-            except (ConnectionError, NetworkError, TimeoutError, OSError) as e:
+            except (ConnectionError, OSError, TimeoutError) as e:
                 retry_count += 1
                 logger.warning(f"Upload error for part {part_name} (attempt {retry_count}/{UPLOAD_RETRY_COUNT}): {e}")
                 

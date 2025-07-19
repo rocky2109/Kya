@@ -7,7 +7,7 @@ import re
 from typing import List, Tuple, Optional
 
 from telethon.tl.types import InputFile, InputFileBig, DocumentAttributeFilename
-from telethon.errors import FloodWaitError, MessageNotModifiedError, TimeoutError, ConnectionError
+from telethon.errors import FloodWaitError, MessageNotModifiedError, TimeoutError
 
 # Assuming config and utils.formatting are accessible
 from config import DOWNLOAD_DIR, MAX_FILE_SIZE, ZIP_PART_SIZE

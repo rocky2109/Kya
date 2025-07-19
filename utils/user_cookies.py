@@ -27,6 +27,9 @@ class UserCookiesManager:
     def save_user_cookies(self, user_id: int, cookie_content: str) -> Tuple[bool, str]:
         """Save cookie content for a specific user and return detailed feedback"""
         try:
+            # Ensure the cookies directory exists
+            os.makedirs(self.cookies_dir, exist_ok=True)
+            
             cookie_path = self.get_user_cookie_path(user_id)
             
             # Validate cookie content
@@ -195,6 +198,11 @@ class UserCookiesManager:
     def cleanup_old_cookies(self, max_age_days: int = 30):
         """Clean up old cookie files"""
         try:
+            # Ensure directory exists before trying to list it
+            if not os.path.exists(self.cookies_dir):
+                logger.debug(f"Cookies directory {self.cookies_dir} does not exist, skipping cleanup")
+                return
+                
             current_time = time.time()
             max_age_seconds = max_age_days * 24 * 3600
             
