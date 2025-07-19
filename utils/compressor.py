@@ -6,27 +6,18 @@ import shutil
 import gc
 from typing import List, Tuple, Optional
 
-# Try to import zipstream-ng package, fallback to zipfile if not available
+# Try to import zipstream package, fallback to zipfile if not available
 try:
-    # First try to import zipstream-ng (the modern version)
-    from zipstream import ZipFile as ZipStreamFile, ZIP_DEFLATED
+    import zipstream
     HAS_ZIPSTREAM = True
-    ZIPSTREAM_TYPE = 'zipstream-ng'
 except ImportError:
-    try:
-        # Try legacy zipstream 
-        import zipstream
-        HAS_ZIPSTREAM = True
-        ZIPSTREAM_TYPE = 'legacy'
-        # Check if it has the required attributes
-        if not hasattr(zipstream, 'ZipFile'):
-            raise ImportError("Zipstream module missing ZipFile class")
-    except ImportError:
-        import zipfile
-        HAS_ZIPSTREAM = False
-        ZIPSTREAM_TYPE = 'none'
-        logger = logging.getLogger(__name__)
-        logger.warning("zipstream not available, using standard zipfile (memory intensive for large files)")
+    import zipfile
+    HAS_ZIPSTREAM = False
+    zipfile = zipfile  # Ensure zipfile is available for fallback
+
+logger = logging.getLogger(__name__)
+if not HAS_ZIPSTREAM:
+    logger.warning("zipstream not available, using standard zipfile (memory intensive for large files)")
 
 # Always import zipfile for fallback
 if 'zipfile' not in locals():
@@ -117,20 +108,32 @@ async def stream_compress(file_paths: List[str], zip_name: str, max_part_size: i
             except Exception as e:
                 logger.error(f"Failed to send initial progress message: {e}")
 
-        # Create zipstream generator - handle different API versions
+        # Create zipstream generator
         try:
-            if ZIPSTREAM_TYPE == 'zipstream-ng':
-                # zipstream-ng API
-                z = ZipStreamFile(compression=ZIP_DEFLATED, allowZip64=True)
-            elif ZIPSTREAM_TYPE == 'legacy':
-                # Legacy zipstream API
-                z = zipstream.ZipFile(mode='w', compression=zipstream.ZIP_DEFLATED, allowZip64=True)
+            # Check what's available in the zipstream module
+            logger.debug(f"zipstream module attributes: {dir(zipstream)}")
+            
+            # Try different zipstream APIs
+            if hasattr(zipstream, 'ZipFile'):
+                # Standard zipstream API
+                z = zipstream.ZipFile(compression=zipstream.ZIP_DEFLATED, allowZip64=True)
+                logger.info("Using zipstream.ZipFile for compression")
+            elif hasattr(zipstream, 'ZipStream'):
+                # Alternative API name
+                z = zipstream.ZipStream(compression=zipstream.ZIP_DEFLATED, allowZip64=True)
+                logger.info("Using zipstream.ZipStream for compression")
             else:
-                raise ImportError("No zipstream available")
-                
-            logger.info(f"Using {ZIPSTREAM_TYPE} for compression")
+                # Check for any callable with 'Zip' in the name
+                zip_classes = [attr for attr in dir(zipstream) if 'Zip' in attr and callable(getattr(zipstream, attr))]
+                if zip_classes:
+                    zip_class = getattr(zipstream, zip_classes[0])
+                    z = zip_class(compression=getattr(zipstream, 'ZIP_DEFLATED', 8), allowZip64=True)
+                    logger.info(f"Using zipstream.{zip_classes[0]} for compression")
+                else:
+                    raise ImportError(f"No usable ZIP class found in zipstream module. Available: {dir(zipstream)}")
         except Exception as e:
-            logger.warning(f"Failed to create zipstream object ({ZIPSTREAM_TYPE}): {e}")
+            logger.warning(f"Failed to create zipstream object: {e}")
+            logger.info("Falling back to standard zipfile compression")
             # Fall back to zipfile
             return await _fallback_compress(file_paths, zip_name, max_part_size, chat_id, task, client, task_manager)
         
@@ -298,6 +301,9 @@ async def _fallback_compress(file_paths: List[str], zip_name: str, max_part_size
         if total_size <= max_part_size:
             # Single ZIP file
             zip_path = os.path.join(temp_dir, f"{zip_name}.zip")
+            processed = 0
+            last_update = time.time()
+            
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 for file_path in all_files:
                     if os.path.exists(file_path):
@@ -308,8 +314,32 @@ async def _fallback_compress(file_paths: List[str], zip_name: str, max_part_size
                             arcname = os.path.relpath(file_path, os.path.dirname(base_dir))
                         else:
                             arcname = os.path.basename(file_path)
+                        
                         zipf.write(file_path, arcname)
                         logger.debug(f"Added {arcname} to zip")
+                        
+                        # Update progress
+                        processed += os.path.getsize(file_path)
+                        now = time.time()
+                        if progress_msg and client and (now - last_update > 2.0):  # Every 2 seconds
+                            try:
+                                percent = (processed / total_size) * 100
+                                bar_length = 20
+                                filled_length = int(bar_length * (processed / max(total_size, 1)))
+                                bar = '█' * filled_length + '░' * (bar_length - filled_length)
+                                
+                                await client.edit_message(
+                                    chat_id,
+                                    progress_msg.id,
+                                    f"🔄 Compressing... (fallback mode)\n"
+                                    f"[{bar}] {percent:.1f}%\n"
+                                    f"Processed: {format_size(processed)}/{format_size(total_size)}\n\n"
+                                    f"⚡Powered by @ZakulikaCompressor_bot"
+                                )
+                                last_update = now
+                            except Exception as e:
+                                if "Message not modified" not in str(e):
+                                    logger.warning(f"Failed to update fallback progress: {e}")
             
             zip_size = os.path.getsize(zip_path)
             
@@ -333,8 +363,10 @@ async def _fallback_compress(file_paths: List[str], zip_name: str, max_part_size
             
             # For now, create a single large file and let the upload handler split it
             zip_path = os.path.join(temp_dir, f"{zip_name}.zip")
+            processed = 0
+            last_update = time.time()
+            
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                processed = 0
                 for file_path in all_files:
                     if os.path.exists(file_path):
                         if len(file_paths) == 1 and os.path.isdir(file_paths[0]):
@@ -345,19 +377,27 @@ async def _fallback_compress(file_paths: List[str], zip_name: str, max_part_size
                         zipf.write(file_path, arcname)
                         processed += os.path.getsize(file_path)
                         
-                        # Update progress
-                        if progress_msg and client and processed % (10 * 1024 * 1024) == 0:  # Every 10MB
+                        # Update progress every 2 seconds
+                        now = time.time()
+                        if progress_msg and client and (now - last_update > 2.0):
                             try:
                                 percent = (processed / total_size) * 100
+                                bar_length = 20
+                                filled_length = int(bar_length * (processed / max(total_size, 1)))
+                                bar = '█' * filled_length + '░' * (bar_length - filled_length)
+                                
                                 await client.edit_message(
                                     chat_id,
                                     progress_msg.id,
-                                    f"🔄 Compressing... {percent:.1f}%\n"
+                                    f"🔄 Compressing... (large dataset)\n"
+                                    f"[{bar}] {percent:.1f}%\n"
                                     f"Processed: {format_size(processed)}/{format_size(total_size)}\n\n"
                                     f"⚡Powered by @ZakulikaCompressor_bot"
                                 )
-                            except Exception:
-                                pass
+                                last_update = now
+                            except Exception as e:
+                                if "Message not modified" not in str(e):
+                                    logger.warning(f"Failed to update large file progress: {e}")
             
             zip_size = os.path.getsize(zip_path)
             
