@@ -26,6 +26,9 @@ COPY . .
 # Create necessary directories
 RUN mkdir -p /tmp/downloads /tmp/sessions /tmp/torrent_bot_db
 
+# Copy cookies file to expected location
+COPY youtube_cookies.txt /tmp/youtube_cookies.txt
+
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV DOWNLOAD_DIR=/tmp/downloads
