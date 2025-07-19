@@ -235,6 +235,11 @@ async def handle_video_queue(task_manager, client, video_downloader, user_stats_
 
             task.update_status(TaskStatus.AWAITING_USER_INPUT, "Waiting for quality selection")
             task_manager._save_task(task)
+            
+            # Important: Call task_done() here since we've completed processing the queue item
+            # The actual download will happen when user selects quality (callback-triggered)
+            task_manager.video_queue.task_done()
+            task_done_called = True
 
         except Exception as outer_e:
             logger.error(f"Outer error in handle_video_queue for task {task.id}: {outer_e}", exc_info=True)
@@ -361,12 +366,20 @@ async def download_video_with_quality(task_manager, client, video_downloader, ta
                     logger.info(f"Task {task.id}: Starting download for format {format_id} into {session.user_dir}")
                     logger.info(f"Task {task.id}: Download finished by yt-dlp: {d.get('filename')}")
             
-            final_video_path = await video_downloader.download_video(
-                url,
-                format_id,
-                output_path=os.path.join(session.user_dir, f"{session.safe_title}.%(ext)s"),
-                progress_callback=_progress_callback
-            )
+            # Add timeout to prevent indefinite hanging
+            try:
+                final_video_path = await asyncio.wait_for(
+                    video_downloader.download_video(
+                        url,
+                        format_id,
+                        output_path=os.path.join(session.user_dir, f"{session.safe_title}.%(ext)s"),
+                        progress_callback=_progress_callback,
+                        user_id=task.chat_id  # Pass user_id for cookies
+                    ),
+                    timeout=1800  # 30 minute timeout
+                )
+            except asyncio.TimeoutError:
+                raise Exception("Download timed out after 30 minutes")
             
             if not final_video_path or 'error' in final_video_path:
                 error_detail = final_video_path.get('error', 'Download failed, no path returned.') if isinstance(final_video_path, dict) else 'Download failed'

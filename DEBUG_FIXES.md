@@ -1,7 +1,24 @@
 # Debug Fixes Applied
+**Problem**: Instagram downloads failing with "login required" and "rate-limit reached" errors
 
-## Issues Fixed
+**Solutions Applied**:
+- **Enhanced Instagram Configuration**: Updated to use iOS 18.1 user agent and modern headers
+- **Improved Extractor Arguments**: 
+  - Enabled newer API version (v2) with fallback support
+  - Added proper HLS handling and format compatibility
+  - Included better retry mechanisms and sleep intervals
+- **Multi-Tier Fallback System**: Added three-tier extraction approach
+  - Primary method with full configuration
+  - Secondary fallback with mobile Firefox user agent and simplified options
+  - Final fallback with minimal curl-like configuration
+- **Better Error Categorization**: Enhanced error detection for:
+  - Authentication errors (401, login required, sign in to confirm)
+  - Rate limiting (429, too many requests)
+  - Content availability (403, private, deleted)
+  - Network issues (timeouts, connection errors)
+- **Cookie Integration**: Improved user-specific cookie handling for Instagram
 
+### 7. Compression Not Working for Large Files
 ### 1. Torrent File Path Error
 **Problem**: Error `ValueError: Failed to convert /tmp/downloads/6286176953/Game.of.Thrones.S08E06.WEB.H264-MEMENTO[rarbg] to media. Not an existing file`
 
@@ -40,16 +57,36 @@
   - Network issues (timeouts, connection errors)
 - **Cookie Integration**: Improved user-specific cookie handling for Instagram
 
-### 4. Tasks Getting Stuck in Queue ⭐ **NEW FIX**
-**Problem**: Video and playlist tasks entering queue status but never progressing
+### 4. YouTube Bot Detection and Authentication Issues ⭐ **NEW FIX**
+**Problem**: YouTube videos failing with "Sign in to confirm you're not a bot" and authentication errors
 
 **Solutions Applied**:
-- **Fixed Queue Management**: Ensured `task_done()` is called exactly once for every dequeued task
+- **Improved YouTube Configuration**: 
+  - Use only 'web' client instead of multiple clients to avoid bot detection
+  - Enhanced HTTP headers with proper browser simulation
+  - Added sleep intervals to avoid rate limiting
+  - Disabled comment extraction and problematic format types
+- **Enhanced Error Detection**: Added specific handling for:
+  - Bot detection ("Sign in to confirm you're not a bot")
+  - Authentication errors (401 Unauthorized)
+  - Rate limiting (429 Too Many Requests)
+  - Access forbidden (403 Forbidden)
+- **Better Cookie Integration**: Improved user cookie handling for authenticated requests
+- **Simplified Extractor Configuration**: Reduced complexity to avoid triggering additional security measures
+
+### 5. Tasks Getting Stuck in Queue ⭐ **CRITICAL FIX**
+**Problem**: Video and playlist tasks entering queue status but never progressing
+
+**Root Cause**: The video queue handler was not calling `task_done()` when tasks transitioned to `AWAITING_USER_INPUT` status
+
+**Solutions Applied**:
+- **Fixed Queue Management**: Ensured `task_done()` is called when queue processing completes, even if task waits for user input
+- **Proper Task Flow**: Queue processing now properly completes when presenting options to user
 - **Improved Error Handling**: Added proper task completion in all exception paths
 - **Enhanced Finally Blocks**: Guaranteed task cleanup regardless of success or failure
 - **Better Status Tracking**: Improved task status transitions to prevent stuck states
 
-### 5. Compression Not Working for Large Files
+### 6. Instagram Authentication and Rate Limiting Issues ⭐ **ENHANCED FIX**
 **Problem**: Compression failing for torrents >2GB and returning empty results
 
 **Solutions**:
@@ -72,24 +109,35 @@
 ## Technical Improvements
 
 ### Video Downloader Enhancements
-- Better YouTube client fallback strategy
-- Improved Instagram compatibility with newer API versions and fallback system
-- Enhanced error messages for common failure scenarios
-- Better handling of rate limiting and access restrictions
-- Two-tier extraction system for improved reliability
+- **YouTube Bot Detection Avoidance**: Simplified client configuration to use only 'web' client
+- **Enhanced Authentication Error Handling**: Specific detection and messaging for bot detection
+- **Better YouTube client fallback strategy**: Removed problematic clients that trigger security measures
+- **Improved Instagram compatibility**: Three-tier fallback system with different user agents
+- **Enhanced error messages**: Context-aware error reporting for authentication issues
+- **Better handling of rate limiting and access restrictions**: Improved retry logic and user guidance
+- **Multi-tier extraction system**: Primary, secondary, and final fallback approaches for improved reliability
 
 ### Task Queue Management
-- **Guaranteed Task Completion**: Every dequeued task now properly calls `task_done()`
+- **Critical Queue Fix**: Resolved tasks getting stuck by ensuring `task_done()` is called when transitioning to `AWAITING_USER_INPUT`
+- **Guaranteed Task Completion**: Every dequeued task now properly calls `task_done()` when queue processing completes
 - **Improved Error Paths**: All exception scenarios properly handle task completion
 - **Better Resource Cleanup**: Enhanced finally blocks ensure proper cleanup
 - **Status Consistency**: Improved task status tracking to prevent inconsistencies
+- **Proper Async Flow**: Queue processing completes independently of user interaction
+
+### YouTube-Specific Improvements
+- **Bot Detection Mitigation**: Use simplified client configuration to avoid triggering security measures
+- **Enhanced Cookie Support**: Better integration of user cookies for authenticated access
+- **Improved Rate Limit Handling**: Added sleep intervals and reduced concurrent requests
+- **Better Error Classification**: Specific handling for different types of YouTube errors
 
 ### Instagram-Specific Improvements
 - **Modern Headers**: Updated to iOS 18.1 user agent for better compatibility
-- **API Fallback**: Primary extraction with v2 API, fallback to basic extraction
+- **Three-Tier Fallback**: Primary extraction with v2 API, secondary with mobile Firefox, final with minimal curl
 - **Enhanced Retry Logic**: Better retry mechanisms with exponential backoff
 - **Cookie Integration**: Improved user cookie handling for authenticated requests
 - **Rate Limit Handling**: Better detection and handling of Instagram rate limits
+- **Comprehensive Error Detection**: Improved classification of different failure types
 
 ### Compression System Fixes
 - Robust file validation before compression

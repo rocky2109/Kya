@@ -126,10 +126,13 @@ class VideoDownloader:
                 },
                 'extractor_args': {
                     'youtube': {
-                        'player_client': ['android', 'web', 'ios', 'tv'],  # Try multiple clients including TV
-                        'skip': ['hls'],  # Skip HLS formats that might cause issues
-                        'player_skip': ['configs'],  # Skip config fetching
-                        'innertube_host': ['youtubei.googleapis.com', 'www.youtube.com'],  # Alternative hosts
+                        'player_client': ['web'],  # Use only web client to avoid bot detection
+                        'skip': ['hls', 'dash'],  # Skip problematic formats
+                        'player_skip': ['configs'],
+                        'innertube_host': ['www.youtube.com'],
+                        'innertube_key': None,  # Let yt-dlp auto-detect
+                        'comment_sort': 'top',
+                        'max_comments': [0],  # Disable comments to reduce requests
                     },
                     'youtubetab': {
                         'skip': ['webpage']
@@ -160,21 +163,41 @@ class VideoDownloader:
                     except yt_dlp.utils.DownloadError as e:
                         logger.error(f"yt-dlp extraction error: {str(e)}")
                         error_msg = str(e)
-                        # Provide more descriptive errors
-                        if "This video is available for Premium users only" in error_msg:
-                            return {'error': 'This video requires YouTube Premium'}
+                        # Provide more descriptive errors with enhanced bot detection handling
+                        if "Sign in to confirm you're not a bot" in error_msg or "confirm you're not a bot" in error_msg:
+                            return {
+                                'error': 'YouTube bot detection triggered. Please upload your YouTube cookies using /setcookies command.',
+                                'error_type': 'authentication',
+                                'needs_cookies': True
+                            }
+                        elif "This video is available for Premium users only" in error_msg:
+                            return {'error': 'This video requires YouTube Premium', 'error_type': 'premium_required'}
                         elif "Sign in to confirm your age" in error_msg or "age-restricted" in error_msg:
-                            return {'error': 'Video is age restricted and requires login'}
+                            return {
+                                'error': 'Video is age restricted and requires login. Upload cookies with /setcookies.',
+                                'error_type': 'authentication'
+                            }
                         elif "private video" in error_msg:
-                            return {'error': 'Video is private and cannot be accessed'}
+                            return {'error': 'Video is private and cannot be accessed', 'error_type': 'content_unavailable'}
                         elif "has been removed" in error_msg:
-                            return {'error': 'Video has been removed from platform'}
+                            return {'error': 'Video has been removed from platform', 'error_type': 'content_unavailable'}
                         elif "Video unavailable" in error_msg:
-                            return {'error': 'Video is currently unavailable'}
-                        elif "HTTP Error 403" in error_msg:
-                            return {'error': 'Access forbidden - this might require authentication'}
-                        elif "HTTP Error 429" in error_msg:
-                            return {'error': 'Rate limited - please try again later'}
+                            return {'error': 'Video is currently unavailable', 'error_type': 'content_unavailable'}
+                        elif "HTTP Error 403" in error_msg or "Forbidden" in error_msg:
+                            return {
+                                'error': 'Access forbidden - upload YouTube cookies with /setcookies for better access.',
+                                'error_type': 'authentication'
+                            }
+                        elif "HTTP Error 429" in error_msg or "too many requests" in error_msg:
+                            return {
+                                'error': 'Rate limited - please try again later or upload cookies with /setcookies.',
+                                'error_type': 'rate_limit'
+                            }
+                        elif "HTTP Error 401" in error_msg or "Unauthorized" in error_msg:
+                            return {
+                                'error': 'YouTube authentication required. Upload cookies with /setcookies.',
+                                'error_type': 'authentication'
+                            }
                         else:
                             return {'error': error_msg}
                     except Exception as e:
@@ -406,19 +429,41 @@ class VideoDownloader:
                     'max_sleep_interval': 8
                 })
             
-            # Special handling for YouTube
+            # Special handling for YouTube with improved bot detection avoidance
             if source == VideoSource.YOUTUBE:
-                ydl_opts['extractor_args'] = {
-                    'youtube': {
-                        'player_client': ['android', 'web', 'ios', 'tv'],  # Try multiple clients including TV
-                        'skip': ['hls'] if format_id != 'best' else [],  # Skip HLS formats that might cause issues
-                        'player_skip': ['configs'],  # Skip config fetching
-                        'innertube_host': ['youtubei.googleapis.com', 'www.youtube.com'],  # Alternative hosts
+                ydl_opts.update({
+                    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                        'Accept-Encoding': 'gzip, deflate, br',
+                        'DNT': '1',
+                        'Connection': 'keep-alive',
+                        'Upgrade-Insecure-Requests': '1',
+                        'Sec-Fetch-Dest': 'document',
+                        'Sec-Fetch-Mode': 'navigate',
+                        'Sec-Fetch-Site': 'none',
+                        'Sec-Fetch-User': '?1'
                     },
-                    'youtubetab': {
-                        'skip': ['webpage']
-                    }
-                }
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': ['web'],  # Use only web client to avoid bot detection
+                            'skip': ['hls', 'dash'],  # Skip problematic formats
+                            'player_skip': ['configs'],
+                            'innertube_host': ['www.youtube.com'],
+                            'innertube_key': None,  # Let yt-dlp auto-detect
+                            'comment_sort': 'top',
+                            'max_comments': [0],  # Disable comments to reduce requests
+                        },
+                        'youtubetab': {
+                            'skip': ['webpage']
+                        }
+                    },
+                    'sleep_interval': 1,  # Add delays to avoid rate limiting
+                    'max_sleep_interval': 5,
+                    'sleep_interval_subtitles': 1
+                })
             
             # Run yt-dlp in a separate thread
             loop = asyncio.get_event_loop()
@@ -723,21 +768,28 @@ class VideoDownloader:
                 # Try fallback with simpler options if the main extraction fails
                 logger.warning(f"Instagram primary extraction failed, trying fallback method: {extract_error}")
                 
-                # Fallback with minimal options
+                # Fallback with minimal options and different user agent
                 fallback_opts = {
                     'quiet': True,
                     'no_warnings': True,
                     'noplaylist': True,
-                    'retries': 5,
+                    'retries': 3,
                     'skip_download': True,
-                    'socket_timeout': 15,
-                    'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'socket_timeout': 10,
+                    'user-agent': 'Mozilla/5.0 (Android 10; Mobile; rv:109.0) Gecko/111.0 Firefox/114.0',
                     'format': 'best',
                     'extractor_args': {
                         'instagram': {
                             'skip_hls': True,
-                            'compatible_formats': True
+                            'compatible_formats': True,
+                            'api_version': '1',  # Use older API version
+                            'fallback_api': False  # Disable additional API calls
                         }
+                    },
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Android 10; Mobile; rv:109.0) Gecko/111.0 Firefox/114.0',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.5'
                     }
                 }
                 
@@ -755,44 +807,74 @@ class VideoDownloader:
                     logger.info(f"Attempting fallback extraction for Instagram URL: {url}")
                     info = await loop.run_in_executor(None, _fallback_extract)
                 except Exception as fallback_error:
-                    # Enhanced error handling for Instagram-specific issues
-                    error_msg = str(extract_error).lower()
-                    fallback_msg = str(fallback_error).lower()
+                    # Try third-tier fallback with even more basic options
+                    logger.warning(f"Instagram fallback extraction also failed, trying final fallback: {fallback_error}")
                     
-                    # Use the more descriptive error message
-                    combined_error = f"{extract_error} | Fallback: {fallback_error}"
+                    final_fallback_opts = {
+                        'quiet': True,
+                        'no_warnings': True,
+                        'noplaylist': True,
+                        'retries': 1,
+                        'skip_download': True,
+                        'socket_timeout': 5,
+                        'user-agent': 'curl/7.68.0',
+                        'format': 'worst',
+                        'ignore_errors': True,
+                        'no_check_certificate': True
+                    }
                     
-                    if any(keyword in error_msg or keyword in fallback_msg for keyword in ["rate-limit", "login required", "requested content is not available"]):
-                        logger.error(f"Instagram authentication error: {combined_error}")
-                        return {
-                            'error': 'Instagram authentication required. Please upload your Instagram cookies using /setcookies command for better success rates.',
-                            'error_type': 'authentication',
-                            'needs_cookies': True
-                        }
-                    elif any(keyword in error_msg or keyword in fallback_msg for keyword in ["not available", "private", "deleted"]):
-                        logger.error(f"Instagram content not available: {combined_error}")
-                        return {
-                            'error': 'Instagram content is not available. It may be private, deleted, or region-restricted.',
-                            'error_type': 'content_unavailable'
-                        }
-                    elif any(keyword in error_msg or keyword in fallback_msg for keyword in ["403", "forbidden"]):
-                        logger.error(f"Instagram access forbidden: {combined_error}")
-                        return {
-                            'error': 'Access to this Instagram content is forbidden. Try uploading cookies with /setcookies.',
-                            'error_type': 'authentication'
-                        }
-                    elif any(keyword in error_msg or keyword in fallback_msg for keyword in ["429", "too many requests"]):
-                        logger.error(f"Instagram rate limited: {combined_error}")
-                        return {
-                            'error': 'Instagram rate limit reached. Please try again later or upload cookies with /setcookies.',
-                            'error_type': 'rate_limit'
-                        }
-                    elif any(keyword in error_msg or keyword in fallback_msg for keyword in ["network", "timeout", "connection"]):
-                        logger.error(f"Instagram network error: {combined_error}")
-                        return {
-                            'error': 'Network error accessing Instagram. Please try again.',
-                            'error_type': 'network_error'
-                        }
+                    def _final_fallback_extract():
+                        with yt_dlp.YoutubeDL(final_fallback_opts) as ydl:
+                            return ydl.extract_info(url, download=False)
+                    
+                    try:
+                        logger.info(f"Attempting final fallback extraction for Instagram URL: {url}")
+                        info = await loop.run_in_executor(None, _final_fallback_extract)
+                    except Exception as final_error:
+                        # Enhanced error handling for Instagram-specific issues
+                        error_msg = str(extract_error).lower()
+                        fallback_msg = str(fallback_error).lower()
+                        final_msg = str(final_error).lower()
+                        
+                        # Use the most descriptive error message
+                        combined_error = f"Primary: {extract_error} | Fallback: {fallback_error} | Final: {final_error}"
+                        
+                        if any(keyword in error_msg or keyword in fallback_msg or keyword in final_msg 
+                               for keyword in ["rate-limit", "login required", "requested content is not available", "sign in to confirm"]):
+                            logger.error(f"Instagram authentication error: {combined_error}")
+                            return {
+                                'error': 'Instagram authentication required. Please upload your Instagram cookies using /setcookies command for better success rates.',
+                                'error_type': 'authentication',
+                                'needs_cookies': True
+                            }
+                        elif any(keyword in error_msg or keyword in fallback_msg or keyword in final_msg 
+                                for keyword in ["not available", "private", "deleted"]):
+                            logger.error(f"Instagram content not available: {combined_error}")
+                            return {
+                                'error': 'Instagram content is not available. It may be private, deleted, or region-restricted.',
+                                'error_type': 'content_unavailable'
+                            }
+                        elif any(keyword in error_msg or keyword in fallback_msg or keyword in final_msg 
+                                for keyword in ["403", "forbidden"]):
+                            logger.error(f"Instagram access forbidden: {combined_error}")
+                            return {
+                                'error': 'Access to this Instagram content is forbidden. Try uploading cookies with /setcookies.',
+                                'error_type': 'authentication'
+                            }
+                        elif any(keyword in error_msg or keyword in fallback_msg or keyword in final_msg 
+                                for keyword in ["429", "too many requests"]):
+                            logger.error(f"Instagram rate limited: {combined_error}")
+                            return {
+                                'error': 'Instagram rate limit reached. Please try again later or upload cookies with /setcookies.',
+                                'error_type': 'rate_limit'
+                            }
+                        elif any(keyword in error_msg or keyword in fallback_msg or keyword in final_msg 
+                                for keyword in ["network", "timeout", "connection"]):
+                            logger.error(f"Instagram network error: {combined_error}")
+                            return {
+                                'error': 'Network error accessing Instagram. Please try again.',
+                                'error_type': 'network_error'
+                            }
                     else:
                         logger.error(f"Instagram extraction error: {combined_error}")
                         return {
