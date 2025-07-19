@@ -6,16 +6,27 @@ import shutil
 import gc
 from typing import List, Tuple, Optional
 
-# Try to import zipstream package, fallback to zipfile if not available
+# Try to import zipstream-ng package, fallback to zipfile if not available
 try:
-    import zipstream
+    # First try to import zipstream-ng (the modern version)
+    from zipstream import ZipFile as ZipStreamFile, ZIP_DEFLATED
     HAS_ZIPSTREAM = True
+    ZIPSTREAM_TYPE = 'zipstream-ng'
 except ImportError:
-    import zipfile
-    HAS_ZIPSTREAM = False
-    zipfile = zipfile  # Ensure zipfile is available for fallback
-    logger = logging.getLogger(__name__)
-    logger.warning("zipstream not available, using standard zipfile (memory intensive for large files)")
+    try:
+        # Try legacy zipstream 
+        import zipstream
+        HAS_ZIPSTREAM = True
+        ZIPSTREAM_TYPE = 'legacy'
+        # Check if it has the required attributes
+        if not hasattr(zipstream, 'ZipFile'):
+            raise ImportError("Zipstream module missing ZipFile class")
+    except ImportError:
+        import zipfile
+        HAS_ZIPSTREAM = False
+        ZIPSTREAM_TYPE = 'none'
+        logger = logging.getLogger(__name__)
+        logger.warning("zipstream not available, using standard zipfile (memory intensive for large files)")
 
 # Always import zipfile for fallback
 if 'zipfile' not in locals():
@@ -106,8 +117,22 @@ async def stream_compress(file_paths: List[str], zip_name: str, max_part_size: i
             except Exception as e:
                 logger.error(f"Failed to send initial progress message: {e}")
 
-        # Create zipstream generator
-        z = zipstream.ZipFile(mode='w', compression=zipstream.ZIP_DEFLATED, allowZip64=True)
+        # Create zipstream generator - handle different API versions
+        try:
+            if ZIPSTREAM_TYPE == 'zipstream-ng':
+                # zipstream-ng API
+                z = ZipStreamFile(compression=ZIP_DEFLATED, allowZip64=True)
+            elif ZIPSTREAM_TYPE == 'legacy':
+                # Legacy zipstream API
+                z = zipstream.ZipFile(mode='w', compression=zipstream.ZIP_DEFLATED, allowZip64=True)
+            else:
+                raise ImportError("No zipstream available")
+                
+            logger.info(f"Using {ZIPSTREAM_TYPE} for compression")
+        except Exception as e:
+            logger.warning(f"Failed to create zipstream object ({ZIPSTREAM_TYPE}): {e}")
+            # Fall back to zipfile
+            return await _fallback_compress(file_paths, zip_name, max_part_size, chat_id, task, client, task_manager)
         
         # Add all files to the zipstream
         for file_path in valid_files:

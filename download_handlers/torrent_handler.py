@@ -20,6 +20,8 @@ from utils.message_tracker import message_tracker # Import message tracker for a
 
 logger = logging.getLogger(__name__)
 
+logger = logging.getLogger(__name__)
+
 # Helper to get libtorrent version (consider moving to utils if used elsewhere)
 def get_libtorrent_version():
     """Get libtorrent version as a tuple"""
