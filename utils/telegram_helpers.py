@@ -7,11 +7,12 @@ import re
 from typing import List, Tuple, Optional
 
 from telethon.tl.types import InputFile, InputFileBig, DocumentAttributeFilename
-from telethon.errors import FloodWaitError, MessageNotModifiedError  # Removed FileTooLargeError
+from telethon.errors import FloodWaitError, MessageNotModifiedError, TimeoutError, ConnectionError
 
 # Assuming config and utils.formatting are accessible
 from config import DOWNLOAD_DIR, MAX_FILE_SIZE, ZIP_PART_SIZE
 from utils.formatting import format_size, format_time
+from utils.memory_monitor import memory_monitor, safe_large_operation, emergency_cleanup
 
 # Try to import the compressor function, fallback if not available
 try:
@@ -256,8 +257,9 @@ async def send_to_telegram(client, file_path: str, chat_id: int, task: Optional[
                 return
             
             if part_paths:
-                # Upload zip parts
-                success = await upload_zip_parts(client, chat_id, part_paths, task, task_manager)
+                # Upload zip parts using improved handler for better stability
+                from utils.improved_upload import upload_zip_parts_improved
+                success = await upload_zip_parts_improved(client, chat_id, part_paths, task, task_manager)
                 
                 # Clean up temp directory after upload
                 if temp_dir and os.path.exists(temp_dir):
@@ -326,10 +328,42 @@ async def send_to_telegram(client, file_path: str, chat_id: int, task: Optional[
             return
         
         if part_paths:
-            # Upload zip parts
-            success = await upload_zip_parts(client, chat_id, part_paths, task, task_manager)
+            # Upload zip parts with enhanced error handling
+            try:
+                from utils.improved_upload import upload_zip_parts_improved
+                success = await upload_zip_parts_improved(client, chat_id, part_paths, task, task_manager)
+                
+                if not success:
+                    # If upload failed, notify user
+                    if task and task.message_id:
+                        try:
+                            await client.edit_message(
+                                chat_id, 
+                                task.message_id, 
+                                f"❌ Task {task.id}: Upload failed\nSome ZIP parts could not be uploaded. Please check your connection and try again."
+                            )
+                        except Exception:
+                            try:
+                                await client.send_message(
+                                    chat_id, 
+                                    f"❌ Task {task.id}: Upload failed\nSome ZIP parts could not be uploaded."
+                                )
+                            except Exception:
+                                pass
+                
+            except Exception as e:
+                logger.error(f"Critical error during zip upload: {e}", exc_info=True)
+                if task and task.message_id:
+                    try:
+                        await client.edit_message(
+                            chat_id, 
+                            task.message_id, 
+                            f"❌ Task {task.id}: Critical upload error\n{str(e)[:100]}"
+                        )
+                    except Exception:
+                        pass
             
-            # Clean up temp directory after upload
+            # Clean up temp directory after upload (always do this)
             if temp_dir and os.path.exists(temp_dir):
                 try:
                     shutil.rmtree(temp_dir)
@@ -481,9 +515,16 @@ async def send_to_telegram(client, file_path: str, chat_id: int, task: Optional[
 async def upload_zip_parts(client, chat_id, part_paths, task=None, task_manager=None):
     """
     Uploads a list of zip part files to Telegram, one by one, handling progress and cleanup.
+    Enhanced with better error handling, retries, and memory management for large files.
     Returns True if all parts uploaded successfully, False otherwise.
     """
     success = True
+    upload_msg = None
+    
+    # Upload configuration for large files
+    UPLOAD_RETRY_COUNT = 3
+    UPLOAD_TIMEOUT = 300  # 5 minutes per part
+    MEMORY_THRESHOLD = 100 * 1024 * 1024  # 100MB threshold for memory-intensive files
     
     # Send initial upload message for both single and multiple parts
     try:
@@ -492,7 +533,8 @@ async def upload_zip_parts(client, chat_id, part_paths, task=None, task_manager=
             upload_msg = await client.send_message(
                 chat_id,
                 f"📤 Uploading {len(part_paths)} ZIP parts...\n"
-                f"📦 Total size: {format_size(total_size)}\n\n"
+                f"📦 Total size: {format_size(total_size)}\n"
+                f"⚠️ Large file detected - upload may take time\n\n"
                 f"⚡Powered by @ZakulikaCompressor_bot"
             )
         else:
@@ -503,7 +545,8 @@ async def upload_zip_parts(client, chat_id, part_paths, task=None, task_manager=
                 chat_id,
                 f"📤 Uploading ZIP file...\n"
                 f"📁 {part_name}\n"
-                f"📦 Size: {format_size(part_size)}\n\n"
+                f"📦 Size: {format_size(part_size)}\n"
+                f"⚠️ Large file - please wait...\n\n"
                 f"⚡Powered by @ZakulikaCompressor_bot"
             )
         
@@ -513,14 +556,21 @@ async def upload_zip_parts(client, chat_id, part_paths, task=None, task_manager=
         logger.warning(f"Failed to send initial upload message: {e}")
         upload_msg = None
     
+    uploaded_parts = 0
+    failed_parts = []
+    
     for idx, (part_path, part_size) in enumerate(part_paths, start=1):
         if not os.path.exists(part_path):
             logger.error(f"ZIP part not found: {part_path}")
+            failed_parts.append(f"Part {idx} (file not found)")
             success = False
             continue
             
         part_name = os.path.basename(part_path)
         caption = f"📦 Part {idx}/{len(part_paths)}: `{part_name}`\nSize: {format_size(part_size)}"
+        
+        # Determine if this is a memory-intensive upload
+        is_large_file = part_size > MEMORY_THRESHOLD
         
         # Update upload progress for both single and multiple parts
         if upload_msg:
@@ -529,97 +579,211 @@ async def upload_zip_parts(client, chat_id, part_paths, task=None, task_manager=
                     progress_text = (
                         f"📤 Uploading part {idx}/{len(part_paths)}...\n"
                         f"📁 {part_name}\n"
-                        f"💾 Size: {format_size(part_size)}\n\n"
+                        f"💾 Size: {format_size(part_size)}\n"
+                        f"{'⚠️ Large part - may take time' if is_large_file else '🔄 Uploading...'}\n\n"
                         f"⚡Powered by @ZakulikaCompressor_bot"
                     )
                 else:
                     progress_text = (
                         f"📤 Uploading ZIP file...\n"
                         f"📁 {part_name}\n"
-                        f"💾 Size: {format_size(part_size)}\n\n"
+                        f"💾 Size: {format_size(part_size)}\n"
+                        f"{'⚠️ Large file - may take time' if is_large_file else '🔄 Uploading...'}\n\n"
                         f"⚡Powered by @ZakulikaCompressor_bot"
                     )
                 await client.edit_message(chat_id, upload_msg.id, progress_text)
             except Exception:
                 pass
         
-        try:
-            # Add progress tracking for part uploads
-            part_upload_start = time.time()
-            last_progress_update = 0
-            
-            async def part_progress_callback(current, total):
-                nonlocal last_progress_update
-                now = time.time()
-                if now - last_progress_update > 2.0:  # Update every 2 seconds
-                    percent = round((current / total) * 100, 1)
-                    progress_bar = "█" * int(percent // 5) + "░" * (20 - int(percent // 5))
+        # Retry mechanism for each part
+        part_uploaded = False
+        retry_count = 0
+        
+        while retry_count < UPLOAD_RETRY_COUNT and not part_uploaded:
+            try:
+                # Add progress tracking for part uploads with reduced frequency for large files
+                part_upload_start = time.time()
+                last_progress_update = 0
+                progress_update_interval = 5.0 if is_large_file else 2.0  # Less frequent updates for large files
+                
+                async def part_progress_callback(current, total):
+                    nonlocal last_progress_update
+                    now = time.time()
+                    if now - last_progress_update > progress_update_interval:
+                        try:
+                            percent = round((current / total) * 100, 1)
+                            progress_bar = "█" * int(percent // 5) + "░" * (20 - int(percent // 5))
+                            
+                            # Update progress for both single and multiple parts
+                            if upload_msg:
+                                try:
+                                    elapsed = now - part_upload_start
+                                    if total > current and current > 0:
+                                        eta_seconds = (elapsed * (total - current)) / current
+                                        eta_str = f" | ETA: {format_time(eta_seconds)}" if eta_seconds < 3600 else " | ETA: >1h"
+                                    else:
+                                        eta_str = ""
+                                    
+                                    if len(part_paths) > 1:
+                                        progress_text = (
+                                            f"📤 Uploading part {idx}/{len(part_paths)}...\n"
+                                            f"📁 {part_name}\n"
+                                            f"[{progress_bar}] {percent}%\n"
+                                            f"📊 {format_size(current)} / {format_size(part_size)}{eta_str}\n"
+                                            f"Attempt {retry_count + 1}/{UPLOAD_RETRY_COUNT}\n\n"
+                                            f"⚡Powered by @ZakulikaCompressor_bot"
+                                        )
+                                    else:
+                                        progress_text = (
+                                            f"📤 Uploading ZIP file...\n"
+                                            f"📁 {part_name}\n"
+                                            f"[{progress_bar}] {percent}%\n"
+                                            f"📊 {format_size(current)} / {format_size(part_size)}{eta_str}\n"
+                                            f"Attempt {retry_count + 1}/{UPLOAD_RETRY_COUNT}\n\n"
+                                            f"⚡Powered by @ZakulikaCompressor_bot"
+                                        )
+                                    await client.edit_message(chat_id, upload_msg.id, progress_text)
+                                    last_progress_update = now
+                                except Exception:
+                                    pass  # Don't let progress updates break the upload
+                        except Exception:
+                            pass  # Ignore progress callback errors
+                
+                # Upload with timeout
+                upload_task = asyncio.create_task(
+                    client.send_file(
+                        chat_id,
+                        part_path,
+                        caption=caption,
+                        force_document=True,
+                        progress_callback=part_progress_callback
+                    )
+                )
+                
+                # Wait for upload with timeout
+                try:
+                    await asyncio.wait_for(upload_task, timeout=UPLOAD_TIMEOUT)
+                    part_uploaded = True
+                    uploaded_parts += 1
+                    logger.info(f"Successfully uploaded ZIP part {idx}/{len(part_paths)}: {part_name}")
                     
-                    # Update progress for both single and multiple parts
+                    # Delete part after successful upload to save space
+                    try:
+                        os.remove(part_path)
+                        logger.debug(f"Deleted uploaded ZIP part: {part_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to delete ZIP part {part_path}: {e}")
+                        
+                except asyncio.TimeoutError:
+                    logger.warning(f"Upload timeout for part {part_name} (attempt {retry_count + 1})")
+                    upload_task.cancel()
+                    raise TimeoutError(f"Upload timeout after {UPLOAD_TIMEOUT} seconds")
+                    
+            except (ConnectionError, TimeoutError, OSError) as e:
+                retry_count += 1
+                logger.warning(f"Upload error for part {part_name} (attempt {retry_count}/{UPLOAD_RETRY_COUNT}): {e}")
+                
+                if retry_count < UPLOAD_RETRY_COUNT:
+                    # Wait before retrying (exponential backoff)
+                    wait_time = min(30, 5 * (2 ** (retry_count - 1)))  # Max 30 seconds
+                    logger.info(f"Retrying part {part_name} in {wait_time} seconds...")
+                    
                     if upload_msg:
                         try:
-                            if len(part_paths) > 1:
-                                progress_text = (
-                                    f"📤 Uploading part {idx}/{len(part_paths)}...\n"
-                                    f"📁 {part_name}\n"
-                                    f"[{progress_bar}] {percent}%\n"
-                                    f"📊 {format_size(current)} / {format_size(part_size)}\n\n"
-                                    f"⚡Powered by @ZakulikaCompressor_bot"
-                                )
-                            else:
-                                progress_text = (
-                                    f"📤 Uploading ZIP file...\n"
-                                    f"📁 {part_name}\n"
-                                    f"[{progress_bar}] {percent}%\n"
-                                    f"📊 {format_size(current)} / {format_size(part_size)}\n\n"
-                                    f"⚡Powered by @ZakulikaCompressor_bot"
-                                )
-                            await client.edit_message(chat_id, upload_msg.id, progress_text)
-                            last_progress_update = now
+                            await client.edit_message(
+                                chat_id, 
+                                upload_msg.id, 
+                                f"⚠️ Part {idx} failed - retrying in {wait_time}s...\n"
+                                f"Attempt {retry_count}/{UPLOAD_RETRY_COUNT}\n"
+                                f"Error: {str(e)[:100]}\n\n"
+                                f"⚡Powered by @ZakulikaCompressor_bot"
+                            )
                         except Exception:
                             pass
-            
-            await client.send_file(
-                chat_id,
-                part_path,
-                caption=caption,
-                force_document=True,
-                progress_callback=part_progress_callback
-            )
-            logger.info(f"Uploaded ZIP part {idx}/{len(part_paths)}: {part_name}")
-            
-            # Delete part after upload to save space
-            try:
-                os.remove(part_path)
-                logger.debug(f"Deleted uploaded ZIP part: {part_path}")
-            except Exception as e:
-                logger.warning(f"Failed to delete ZIP part {part_path}: {e}")
+                    
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error(f"Failed to upload part {part_name} after {UPLOAD_RETRY_COUNT} attempts")
+                    failed_parts.append(f"Part {idx} ({str(e)[:50]})")
+                    success = False
+                    
+            except FloodWaitError as fwe:
+                logger.warning(f"Flood wait for part {part_name}: {fwe.seconds}s")
+                if upload_msg:
+                    try:
+                        await client.edit_message(
+                            chat_id, 
+                            upload_msg.id, 
+                            f"⏳ Rate limited - waiting {fwe.seconds}s...\n"
+                            f"Part {idx}/{len(part_paths)}: {part_name}\n\n"
+                            f"⚡Powered by @ZakulikaCompressor_bot"
+                        )
+                    except Exception:
+                        pass
                 
-        except Exception as e:
-            logger.error(f"Failed to upload ZIP part {part_name}: {e}")
-            success = False
+                await asyncio.sleep(fwe.seconds)
+                retry_count += 1  # Count flood wait as a retry
+                
+            except Exception as e:
+                logger.error(f"Unexpected error uploading part {part_name}: {e}", exc_info=True)
+                failed_parts.append(f"Part {idx} (unexpected error)")
+                success = False
+                break
+        
+        # Force garbage collection after each part to free memory
+        import gc
+        gc.collect()
     
-    # Clean up upload progress message
+    # Clean up upload progress message and show final result
     if upload_msg:
         try:
-            if success:
+            if success and uploaded_parts == len(part_paths):
                 if len(part_paths) > 1:
-                    success_text = f"✅ Upload complete!\n📦 {len(part_paths)} parts uploaded successfully\n\n⚡Powered by @ZakulikaCompressor_bot"
+                    success_text = (
+                        f"✅ Upload complete!\n"
+                        f"📦 {uploaded_parts}/{len(part_paths)} parts uploaded successfully\n"
+                        f"💾 Total uploaded successfully\n\n"
+                        f"⚡Powered by @ZakulikaCompressor_bot"
+                    )
                 else:
-                    success_text = f"✅ ZIP upload complete!\n� File uploaded successfully\n\n⚡Powered by @ZakulikaCompressor_bot"
+                    success_text = (
+                        f"✅ ZIP upload complete!\n"
+                        f"📁 File uploaded successfully\n"
+                        f"💾 Upload completed without errors\n\n"
+                        f"⚡Powered by @ZakulikaCompressor_bot"
+                    )
                 
                 await client.edit_message(chat_id, upload_msg.id, success_text)
-                await asyncio.sleep(3)
+                await asyncio.sleep(5)  # Show success message longer
                 await upload_msg.delete()
             else:
-                await client.edit_message(
-                    chat_id, 
-                    upload_msg.id, 
-                    f"❌ Upload partially failed\nSome parts may not have uploaded correctly"
+                # Show partial failure information
+                failure_text = (
+                    f"⚠️ Upload partially completed\n"
+                    f"✅ Success: {uploaded_parts}/{len(part_paths)} parts\n"
+                    f"❌ Failed: {len(failed_parts)} parts\n"
                 )
-        except Exception:
-            pass
+                if failed_parts:
+                    failure_text += f"Failed parts: {', '.join(failed_parts[:3])}"
+                    if len(failed_parts) > 3:
+                        failure_text += f" (+{len(failed_parts)-3} more)"
+                failure_text += f"\n\n⚡Powered by @ZakulikaCompressor_bot"
+                
+                await client.edit_message(chat_id, upload_msg.id, failure_text)
+        except Exception as e:
+            logger.warning(f"Failed to update final upload message: {e}")
     
+    # Clean up any remaining files on failure
+    if not success:
+        for part_path, _ in part_paths:
+            if os.path.exists(part_path):
+                try:
+                    os.remove(part_path)
+                    logger.debug(f"Cleaned up failed upload part: {part_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to clean up part {part_path}: {e}")
+    
+    logger.info(f"Upload completed: {uploaded_parts}/{len(part_paths)} parts successful")
     return success
 
 

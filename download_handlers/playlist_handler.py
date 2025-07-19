@@ -486,7 +486,8 @@ async def download_playlist_with_quality(task_manager, client, video_downloader,
                     )
 
                     if part_paths:
-                        upload_success, status_msgs = await upload_zip_parts(client, task.chat_id, part_paths, task, task_manager)
+                        from utils.improved_upload import upload_zip_parts_improved
+                        upload_success = await upload_zip_parts_improved(client, task.chat_id, part_paths, task, task_manager)
                         if upload_success:
                             task.update_status(TaskStatus.COMPLETED)
                             task.result_path = playlist_dir

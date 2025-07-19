@@ -231,11 +231,29 @@ async def stream_compress(file_paths: List[str], zip_name: str, max_part_size: i
         part_path = os.path.join(temp_dir, f"{zip_name}.zip.{part_number:03d}")
         current_size = 0
         
+        # Add memory monitoring for large files
+        import psutil
+        initial_memory = psutil.virtual_memory().available
+        memory_warning_threshold = 500 * 1024 * 1024  # 500MB minimum free memory
+        
         with open(part_path, 'wb') as f:
+            chunk_count = 0
             for chunk in z:
                 f.write(chunk)
                 current_size += len(chunk)
                 processed_size += len(chunk)
+                chunk_count += 1
+                
+                # Monitor memory usage for large files
+                if chunk_count % 100 == 0:  # Check every 100 chunks
+                    try:
+                        available_memory = psutil.virtual_memory().available
+                        if available_memory < memory_warning_threshold:
+                            logger.warning(f"Low memory detected: {format_size(available_memory)} available")
+                            # Force garbage collection
+                            gc.collect()
+                    except Exception:
+                        pass  # Don't let memory monitoring break compression
                 
                 # Update progress periodically
                 now = time.time()
@@ -259,19 +277,25 @@ async def stream_compress(file_paths: List[str], zip_name: str, max_part_size: i
                             if "Message not modified" not in str(e):
                                 logger.warning(f"Failed to edit compression progress: {e}")
                 
-                # Check if we need to split into multiple parts
-                if current_size >= max_part_size:
-                    multipart_generated = True
-                    part_paths.append((part_path, current_size))
-                    logger.info(f"Completed ZIP part {part_number}: {format_size(current_size)}")
-                    
-                    part_number += 1
-                    part_path = os.path.join(temp_dir, f"{zip_name}.zip.{part_number:03d}")
-                    current_size = 0
-                    f.close()
-                    f = open(part_path, 'wb')
-        
-        # Handle final part
+        # Check if we need to split into multiple parts
+        if current_size >= max_part_size:
+            multipart_generated = True
+            part_paths.append((part_path, current_size))
+            logger.info(f"Completed ZIP part {part_number}: {format_size(current_size)}")
+            
+            part_number += 1
+            part_path = os.path.join(temp_dir, f"{zip_name}.zip.{part_number:03d}")
+            current_size = 0
+            f.close()
+            f = open(part_path, 'wb')
+            
+            # Enhanced memory cleanup between parts for large files
+            if current_size > 1024**3:  # If part was > 1GB, do aggressive cleanup
+                gc.collect()
+                gc.collect()  # Double collection for large parts
+                logger.debug(f"Aggressive memory cleanup after large part {part_number-1}")
+            else:
+                gc.collect()  # Standard cleanup        # Handle final part
         if multipart_generated:
             # If we split into multiple parts, add the final part if it has content
             if current_size > 0:

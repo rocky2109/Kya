@@ -11,8 +11,20 @@ TEMP_DIR = os.path.join(DOWNLOAD_DIR, "temp")
 # Ensure directories exist
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
-ZIP_PART_SIZE = int(1.9 * 1024**3)  # ~1.9GB (slightly under Telegram's limit)
+
+# Optimized ZIP part sizes for better upload stability
+ZIP_PART_SIZE = int(1.8 * 1024**3)  # ~1.8GB (more conservative for stability)
 MAX_FILE_SIZE = 2 * 1024**3  # 2GB (Telegram's limit)
+
+# Large file upload configuration - enhanced for very large files
+LARGE_FILE_TIMEOUT = 1800  # 30 minutes for large files (increased)
+UPLOAD_RETRY_DELAY = 60  # 60 seconds between retries (increased)
+MAX_MEMORY_USAGE = 75  # Maximum memory usage percentage before forcing cleanup (more conservative)
+
+# Massive file handling (>10GB files)
+MASSIVE_FILE_THRESHOLD = 10 * 1024**3  # 10GB threshold
+MASSIVE_FILE_PART_SIZE = int(1.5 * 1024**3)  # 1.5GB parts for massive files
+MASSIVE_FILE_TIMEOUT = 3600  # 1 hour timeout for massive file parts
 
 # Admin user IDs (users who can access admin features)
 ADMIN_USER_IDS = [int(x) for x in os.environ.get("ADMIN_USER_IDS", "884479561").split(",") if x.strip()]
