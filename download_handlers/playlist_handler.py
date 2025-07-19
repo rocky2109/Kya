@@ -149,93 +149,102 @@ async def handle_playlist_queue(task_manager, client, video_downloader, user_sta
                 
             try:
                 # Add timeout to semaphore acquisition
-                async with asyncio.timeout(300):  # 5 minute timeout
-                    async with task_manager.video_semaphore: # Use video semaphore for playlists too
-                        # Re-check status after acquiring semaphore
-                        if task.status == TaskStatus.CANCELLED:
-                            logger.info(f"Skipping cancelled playlist task {task.id} after acquiring semaphore.")
-                            task_manager.playlist_queue.task_done()
-                            task_done_called = True
-                            continue
+                await asyncio.wait_for(task_manager.video_semaphore.acquire(), timeout=300)  # 5 minute timeout
+                try:
+                    # Re-check status after acquiring semaphore
+                    if task.status == TaskStatus.CANCELLED:
+                        logger.info(f"Skipping cancelled playlist task {task.id} after acquiring semaphore.")
+                        task_manager.playlist_queue.task_done()
+                        task_done_called = True
+                        continue
 
-                        logger.info(f"Starting playlist task {task.id} for user {task.chat_id}")
-                        task.update_status(TaskStatus.RUNNING)
+                    logger.info(f"Starting playlist task {task.id} for user {task.chat_id}")
+                    task.update_status(TaskStatus.RUNNING)
+                    task_manager._save_task(task)
+
+                    url = task.data # Assuming data is just the URL initially
+                    format_id = 'best' # Default format                        # Create initial progress message using tracked message
+                    progress_msg_text = f"🔄 Task {task.id}: Analyzing playlist...\n" \
+                                      f"URL: {url[:60]}{'...' if len(url) > 60 else ''}"
+                    progress_msg = await send_tracked_message(
+                        client, 
+                        task.chat_id,
+                        progress_msg_text,
+                        task,
+                        auto_delete=300  # Auto-delete after 5 minutes if no action taken
+                    )
+                    task_manager.update_task(task.id, message_id=progress_msg.id)
+
+                    # Get playlist info
+                    logger.debug(f"Task {task.id}: Fetching playlist info for {url}")
+                    playlist_info = await video_downloader.get_video_info(url)
+                    
+                    if 'error' in playlist_info:
+                        error_msg = playlist_info['error']
+                        logger.error(f"Task {task.id}: Error fetching playlist info: {error_msg}")
+                        await client.edit_message(task.chat_id, progress_msg.id, f"❌ Task {task.id} Error: {error_msg}")
+                        # Schedule this error message for deletion after 60 seconds
+                        await message_tracker.schedule_deletion(client, task, progress_msg.id, 60)
+                        task.update_status(TaskStatus.FAILED, error_msg)
                         task_manager._save_task(task)
-
-                        url = task.data # Assuming data is just the URL initially
-                        format_id = 'best' # Default format                        # Create initial progress message using tracked message
-                        progress_msg_text = f"🔄 Task {task.id}: Analyzing playlist...\n" \
-                                          f"URL: {url[:60]}{'...' if len(url) > 60 else ''}"
-                        progress_msg = await send_tracked_message(
-                            client, 
-                            task.chat_id,
-                            progress_msg_text,
-                            task,
-                            auto_delete=300  # Auto-delete after 5 minutes if no action taken
-                        )
-                        task_manager.update_task(task.id, message_id=progress_msg.id)
-
-                        # Get playlist info
-                        logger.debug(f"Task {task.id}: Fetching playlist info for {url}")
-                        playlist_info = await video_downloader.get_video_info(url)
-                        if 'error' in playlist_info:
-                            error_msg = playlist_info['error']
-                            logger.error(f"Task {task.id}: Error fetching playlist info: {error_msg}")
-                            await client.edit_message(task.chat_id, progress_msg.id, f"❌ Task {task.id} Error: {error_msg}")
-                            # Schedule this error message for deletion after 60 seconds
-                            await message_tracker.schedule_deletion(client, task, progress_msg.id, 60)
-                            task.update_status(TaskStatus.FAILED, error_msg)
-                            task_manager._save_task(task)
-                            task_manager.playlist_queue.task_done()
-                            task_done_called = True
-                            continue                        # Verify this is actually a playlist
-                        if not playlist_info.get('is_playlist', False):
-                            error_msg = "Not a valid playlist URL. Please send a single video URL instead."
-                            logger.warning(f"Task {task.id}: URL {url} is not a playlist.")
-                            await client.edit_message(task.chat_id, progress_msg.id, f"❌ Task {task.id} Error: {error_msg}")
-                            # Schedule error message for deletion after 60 seconds
-                            await message_tracker.schedule_deletion(client, task, progress_msg.id, 60)
-                            task.update_status(TaskStatus.FAILED, "Not a valid playlist URL")
-                            task_manager._save_task(task)
-                            task_manager.playlist_queue.task_done()
-                            task_done_called = True
-                            continue
-
-                        title = playlist_info.get('title', 'Playlist')
-                        entries = playlist_info.get('entries', [])
-                        video_count = len(entries)
+                        task_manager.playlist_queue.task_done()
+                        task_done_called = True
+                        continue
                         
-                        if video_count == 0:
-                            logger.warning(f"Task {task.id}: Playlist '{title}' is empty.")
-                            await client.edit_message(task.chat_id, progress_msg.id, f"❌ Task {task.id}: No videos found in this playlist.")
-                            # Schedule error message for deletion after 60 seconds
-                            await message_tracker.schedule_deletion(client, task, progress_msg.id, 60)
-                            task.update_status(TaskStatus.FAILED, "Playlist empty")
-                            task_manager._save_task(task)
-                            task_manager.playlist_queue.task_done()
-                            task_done_called = True
-                            continue
+                    # Verify this is actually a playlist
+                    if not playlist_info.get('is_playlist', False):
+                        error_msg = "Not a valid playlist URL. Please send a single video URL instead."
+                        logger.warning(f"Task {task.id}: URL {url} is not a playlist.")
+                        await client.edit_message(task.chat_id, progress_msg.id, f"❌ Task {task.id} Error: {error_msg}")
+                        # Schedule error message for deletion after 60 seconds
+                        await message_tracker.schedule_deletion(client, task, progress_msg.id, 60)
+                        task.update_status(TaskStatus.FAILED, "Not a valid playlist URL")
+                        task_manager._save_task(task)
+                        task_manager.playlist_queue.task_done()
+                        task_done_called = True
+                        continue
 
-                        # Ask user how to download
-                        quality_buttons = [
-                            [Button.inline("✅ Download all (Best Quality)", data=f"playlist_best_{task.id}")],
-                            # Option to select quality might be complex for playlists, consider adding later if needed
-                            [Button.inline("❌ Cancel", data=f"cancel_{task.id}")]
-                        ]                        # Present options through a single message update
-                        await client.edit_message(
-                            task.chat_id,
-                            progress_msg.id,
-                            f"📋 Playlist: {title}\n"
-                            f"📺 Videos: {video_count}\n\n"
-                            f"Task ID: {task.id}\n"
-                            f"Please choose download option:",
-                            buttons=quality_buttons
-                        )
-                        # Make sure this message is tracked for auto-deletion after a reasonable time
-                        from utils.message_tracker import message_tracker
-                        await message_tracker.schedule_deletion(client, task, progress_msg.id, 300)  # 5 minutes timeout
-                        logger.info(f"Task {task.id}: Presented download options for playlist '{title}' to user {task.chat_id}")
-                        # Task remains RUNNING, waiting for user callback            except asyncio.TimeoutError:
+                    title = playlist_info.get('title', 'Playlist')
+                    entries = playlist_info.get('entries', [])
+                    video_count = len(entries)
+                    
+                    if video_count == 0:
+                        logger.warning(f"Task {task.id}: Playlist '{title}' is empty.")
+                        await client.edit_message(task.chat_id, progress_msg.id, f"❌ Task {task.id}: No videos found in this playlist.")
+                        # Schedule error message for deletion after 60 seconds
+                        await message_tracker.schedule_deletion(client, task, progress_msg.id, 60)
+                        task.update_status(TaskStatus.FAILED, "Playlist empty")
+                        task_manager._save_task(task)
+                        task_manager.playlist_queue.task_done()
+                        task_done_called = True
+                        continue
+
+                    # Ask user how to download
+                    quality_buttons = [
+                        [Button.inline("✅ Download all (Best Quality)", data=f"playlist_best_{task.id}")],
+                        # Option to select quality might be complex for playlists, consider adding later if needed
+                        [Button.inline("❌ Cancel", data=f"cancel_{task.id}")]
+                    ]
+                    
+                    # Present options through a single message update
+                    await client.edit_message(
+                        task.chat_id,
+                        progress_msg.id,
+                        f"📋 Playlist: {title}\n"
+                        f"📺 Videos: {video_count}\n\n"
+                        f"Task ID: {task.id}\n"
+                        f"Please choose download option:",
+                        buttons=quality_buttons
+                    )
+                    # Make sure this message is tracked for auto-deletion after a reasonable time
+                    from utils.message_tracker import message_tracker
+                    await message_tracker.schedule_deletion(client, task, progress_msg.id, 300)  # 5 minutes timeout
+                    logger.info(f"Task {task.id}: Presented download options for playlist '{title}' to user {task.chat_id}")
+                    # Task remains RUNNING, waiting for user callback
+                finally:
+                    task_manager.video_semaphore.release()
+                    
+            except asyncio.TimeoutError:
                 logger.error(f"Task {task.id}: Timeout waiting for video semaphore")
                 # Update existing message or send new one if needed
                 if progress_msg:

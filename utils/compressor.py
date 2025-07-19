@@ -3,7 +3,7 @@ import time
 import logging
 import asyncio
 import shutil
-import zipstream
+import zipstream_ng as zipstream
 import gc
 from typing import List, Tuple, Optional
 

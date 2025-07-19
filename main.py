@@ -210,9 +210,8 @@ async def handle_direct_download_queue_wrapper():
             # Apply timeout only to semaphore acquisition, not the entire task execution
             semaphore_acquired = False
             try:
-                async with asyncio.timeout(300):  # 5 minute timeout for semaphore acquisition only
-                    await task_manager.download_semaphore.acquire()
-                    semaphore_acquired = True
+                await asyncio.wait_for(task_manager.download_semaphore.acquire(), timeout=300)  # 5 minute timeout for semaphore acquisition only
+                semaphore_acquired = True
             except asyncio.TimeoutError:
                 logger.error(f"Task {task.id}: Timeout waiting for download semaphore")
                 try:
@@ -318,21 +317,23 @@ async def handle_torrent_queue_wrapper():
 
             try:
                 # Add timeout to semaphore acquisition
-                async with asyncio.timeout(300):  # 5 minute timeout
-                    async with task_manager.torrent_semaphore:
-                        if task.status == TaskStatus.CANCELLED:
-                            logger.info(f"Skipping cancelled torrent task {task.id} after semaphore.")
-                            task_manager.torrent_queue.task_done()
-                            task_done_called = True
-                            continue
+                await asyncio.wait_for(task_manager.torrent_semaphore.acquire(), timeout=300)  # 5 minute timeout
+                try:
+                    if task.status == TaskStatus.CANCELLED:
+                        logger.info(f"Skipping cancelled torrent task {task.id} after semaphore.")
+                        task_manager.torrent_queue.task_done()
+                        task_done_called = True
+                        continue
 
-                        logger.info(f"Starting torrent task {task.id}")
-                        task.update_status(TaskStatus.RUNNING)
-                        task_manager._save_task(task)
+                    logger.info(f"Starting torrent task {task.id}")
+                    task.update_status(TaskStatus.RUNNING)
+                    task_manager._save_task(task)
 
-                        # Call the actual handler (task.data is the .torrent file path)
-                        await handle_torrent(task_manager, client, user_stats_manager, task.data, task.chat_id, task)
-                        # Status is set within handle_torrent
+                    # Call the actual handler (task.data is the .torrent file path)
+                    await handle_torrent(task_manager, client, user_stats_manager, task.data, task.chat_id, task)
+                    # Status is set within handle_torrent
+                finally:
+                    task_manager.torrent_semaphore.release()
 
             except asyncio.TimeoutError:
                 logger.error(f"Task {task.id}: Timeout waiting for torrent semaphore")
@@ -380,37 +381,39 @@ async def handle_magnet_queue_wrapper():
 
             try:
                 # Add timeout to semaphore acquisition
-                async with asyncio.timeout(300):  # 5 minute timeout
-                    async with task_manager.torrent_semaphore: # Share semaphore with torrents
-                        if task.status == TaskStatus.CANCELLED:
-                            logger.info(f"Skipping cancelled magnet task {task.id} after semaphore.")
-                            task_manager.magnet_queue.task_done()
-                            task_done_called = True
-                            continue
+                await asyncio.wait_for(task_manager.torrent_semaphore.acquire(), timeout=300)  # 5 minute timeout
+                try:
+                    if task.status == TaskStatus.CANCELLED:
+                        logger.info(f"Skipping cancelled magnet task {task.id} after semaphore.")
+                        task_manager.magnet_queue.task_done()
+                        task_done_called = True
+                        continue
 
-                        logger.info(f"Starting magnet task {task.id}")
-                        task.update_status(TaskStatus.RUNNING)
-                        task_manager._save_task(task) # Save running status
+                    logger.info(f"Starting magnet task {task.id}")
+                    task.update_status(TaskStatus.RUNNING)
+                    task_manager._save_task(task) # Save running status
 
-                        # Send the initial message and store its ID
-                        try:
-                            progress_msg = await client.send_message(
-                                task.chat_id,
-                                f"🧲 Task {task.id}: Processing magnet link..."
-                            )
-                            task_manager.update_task(task.id, message_id=progress_msg.id)
-                            task.add_temp_message(progress_msg.id) # For cleanup on failure
-                        except Exception as e:
-                            logger.error(f"Task {task.id}: Failed to send initial status message: {e}")
-                            task.update_status(TaskStatus.FAILED, "Failed to send status message")
-                            task_manager._save_task(task)
-                            task_manager.magnet_queue.task_done()
-                            task_done_called = True
-                            continue # Skip to next task
+                    # Send the initial message and store its ID
+                    try:
+                        progress_msg = await client.send_message(
+                            task.chat_id,
+                            f"🧲 Task {task.id}: Processing magnet link..."
+                        )
+                        task_manager.update_task(task.id, message_id=progress_msg.id)
+                        task.add_temp_message(progress_msg.id) # For cleanup on failure
+                    except Exception as e:
+                        logger.error(f"Task {task.id}: Failed to send initial status message: {e}")
+                        task.update_status(TaskStatus.FAILED, "Failed to send status message")
+                        task_manager._save_task(task)
+                        task_manager.magnet_queue.task_done()
+                        task_done_called = True
+                        continue # Skip to next task
 
-                        # Call the actual handler (task.data is the magnet link)
-                        await handle_magnet(task_manager, client, user_stats_manager, task.data, task.chat_id, task)
-                        # Status is set within handle_magnet
+                    # Call the actual handler (task.data is the magnet link)
+                    await handle_magnet(task_manager, client, user_stats_manager, task.data, task.chat_id, task)
+                    # Status is set within handle_magnet
+                finally:
+                    task_manager.torrent_semaphore.release()
 
             except asyncio.TimeoutError:
                 logger.error(f"Task {task.id}: Timeout waiting for magnet semaphore")
@@ -673,6 +676,10 @@ async def message_handler(event):
         user_id = event.sender_id
         message_text = event.text.strip() if event.text else ""
         logger.info(f"Received message from user {user_id}. Text: '{message_text[:50]}...' File: {event.file is not None}")
+        
+        # Debug log for admin users
+        if user_id in config.ADMIN_USER_IDS:
+            logger.info(f"Admin user {user_id} detected")
 
         # Check if user is allowed to start a task
         can_start, reason = user_stats_manager.check_rate_limit(user_id)
@@ -859,6 +866,28 @@ async def cleanup_stalled_downloads():
         try:
             logger.info("Running stalled download cleanup...")
             await stalled_download_cleaner.cleanup_stalled_downloads()
+            
+            # Additional cleanup: check for tasks that have been in PROCESSING state too long
+            current_time = time.time()
+            stalled_cutoff = current_time - (2 * 60 * 60)  # 2 hours
+            
+            stalled_count = 0
+            for task_id, task in list(task_manager.tasks.items()):
+                if task.status == TaskStatus.PROCESSING and task.updated_at < stalled_cutoff:
+                    logger.warning(f"Task {task_id} stalled in PROCESSING state for >2h. Marking as failed.")
+                    task.update_status(TaskStatus.FAILED, "Task stalled in processing state")
+                    task_manager._save_task(task)
+                    stalled_count += 1
+                    
+                    # Clean up any associated messages
+                    try:
+                        await delete_temp_messages(client, task, task_manager)
+                    except Exception as e:
+                        logger.error(f"Error cleaning up messages for stalled task {task_id}: {e}")
+            
+            if stalled_count > 0:
+                logger.info(f"Cleaned up {stalled_count} stalled tasks")
+                        
         except Exception as e:
             logger.error(f"Error during stalled download cleanup: {e}")
         await asyncio.sleep(3600)  # Run once every hour
@@ -876,6 +905,17 @@ async def main():
             raise RuntimeError("Failed to authenticate with Telegram")
         logger.info("Successfully connected to Telegram")
 
+        # Create placeholder cookies file if it doesn't exist
+        try:
+            if not os.path.exists(config.COOKIES_FILE):
+                os.makedirs(os.path.dirname(config.COOKIES_FILE), exist_ok=True)
+                with open(config.COOKIES_FILE, 'w') as f:
+                    f.write("# YouTube/Instagram cookies file\n")
+                    f.write("# Add your cookies here in Netscape format\n")
+                logger.info(f"Created placeholder cookies file at {config.COOKIES_FILE}")
+        except Exception as e:
+            logger.warning(f"Failed to create cookies file: {e}")
+
         # Directory setup
         os.makedirs(config.DOWNLOAD_DIR, exist_ok=True)
         os.makedirs(config.TEMP_DIR, exist_ok=True)
@@ -883,6 +923,9 @@ async def main():
 
         logger.info("Starting background tasks...")
         background_tasks = set()
+        
+        # Log admin users for debugging
+        logger.info(f"Admin user IDs: {config.ADMIN_USER_IDS}")
 
         # Create all background tasks
         tasks = [

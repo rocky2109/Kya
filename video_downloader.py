@@ -36,8 +36,17 @@ class VideoDownloader:
         self.download_dir = download_dir
         self.cookies_file = cookies_file
         if self.cookies_file and not os.path.exists(self.cookies_file):
-            logger.error(f"Cookies file not found at {self.cookies_file}. Proceeding without cookies.")
-            self.cookies_file = None
+            logger.warning(f"Cookies file not found at {self.cookies_file}. Some video downloads might fail.")
+            # Create a placeholder cookies file to prevent errors
+            try:
+                os.makedirs(os.path.dirname(self.cookies_file), exist_ok=True)
+                with open(self.cookies_file, 'w') as f:
+                    f.write("# YouTube/Instagram cookies file\n")
+                    f.write("# Add your cookies here in Netscape format\n")
+                logger.info(f"Created placeholder cookies file at {self.cookies_file}")
+            except Exception as e:
+                logger.error(f"Failed to create placeholder cookies file: {e}")
+                self.cookies_file = None
         
     def detect_source(self, url: str) -> Tuple[VideoSource, str]:
         """Detect the source platform and extract video ID from URL"""
@@ -721,8 +730,16 @@ class VideoDownloader:
             }
             
         except Exception as e:
-            logger.error(f"Instagram extraction error: {e}")
-            return {'error': str(e)}
+            error_msg = str(e)
+            logger.error(f"Instagram extraction error: {error_msg}")
+            
+            # Check for common Instagram authentication errors
+            if "login required" in error_msg.lower() or "rate-limit" in error_msg.lower() or "authentication" in error_msg.lower():
+                return {'error': 'Instagram authentication required. Please provide cookies or try again later.'}
+            elif "content is not available" in error_msg.lower():
+                return {'error': 'Instagram content not available. It may be private or deleted.'}
+            else:
+                return {'error': f'Instagram download failed: {error_msg}'}
     
     async def compress_videos(self, video_paths: List[str], output_dir: str, quality: str = 'medium') -> Dict[str, Any]:
         """Compress multiple videos using ffmpeg"""

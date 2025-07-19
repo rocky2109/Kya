@@ -15,7 +15,7 @@ ZIP_PART_SIZE = int(1.9 * 1024**3)  # ~1.9GB (slightly under Telegram's limit)
 MAX_FILE_SIZE = 2 * 1024**3  # 2GB (Telegram's limit)
 
 # Admin user IDs (users who can access admin features)
-ADMIN_USER_IDS = [int(x) for x in os.environ.get("ADMIN_USER_IDS", "").split(",") if x.strip()]
+ADMIN_USER_IDS = [int(x) for x in os.environ.get("ADMIN_USER_IDS", "884479561").split(",") if x.strip()]
 
 # Rate limits - configurable via environment variables
 MAX_CONCURRENT_DOWNLOADS = int(os.environ.get("MAX_CONCURRENT_DOWNLOADS", "3"))

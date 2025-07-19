@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Set
 
 from config import (
     MAX_CONCURRENT_DOWNLOADS, MAX_CONCURRENT_TORRENTS, MAX_CONCURRENT_ZIPS,
-    DB_PATH, MAX_TASKS_PER_USER
+    DB_PATH, MAX_TASKS_PER_USER, ADMIN_USER_IDS
 )
 from enums import TaskType, TaskStatus
 from models import Task
@@ -149,9 +149,12 @@ class TaskManager:
 
     def add_task(self, task_type: TaskType, chat_id: int, data: str) -> Optional[Task]:
         """Add a new task to the queue"""
-        if len(self.user_tasks.get(chat_id, set())) >= MAX_TASKS_PER_USER:
+        # Check task limit (admin users bypass this limit)
+        if chat_id not in ADMIN_USER_IDS and len(self.user_tasks.get(chat_id, set())) >= MAX_TASKS_PER_USER:
              logger.warning(f"User {chat_id} reached max tasks limit ({MAX_TASKS_PER_USER}).")
              return None # Indicate task was not added
+        elif chat_id in ADMIN_USER_IDS:
+             logger.info(f"Admin user {chat_id} bypassing task limit (current: {len(self.user_tasks.get(chat_id, set()))})")
 
         task_id = generate_simple_task_id(chat_id)
         # Ensure unique task ID

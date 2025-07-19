@@ -186,6 +186,7 @@ class UserStats:
         """Check if the user is allowed to start a new task based on limits."""
         user_id_key = int(user_id)
         if user_id_key in ADMIN_USER_IDS:
+            logger.info(f"Admin user {user_id_key} bypassing rate limits")
             return True, None # Admins bypass limits
 
         current_time = time.time()
