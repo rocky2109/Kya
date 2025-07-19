@@ -12,7 +12,20 @@ from telethon.errors import FloodWaitError, MessageNotModifiedError  # Removed F
 # Assuming config and utils.formatting are accessible
 from config import DOWNLOAD_DIR, MAX_FILE_SIZE, ZIP_PART_SIZE
 from utils.formatting import format_size, format_time
-from utils.compressor import stream_compress  # Import the compressor function
+
+# Try to import the compressor function, fallback if not available
+try:
+    from utils.compressor import stream_compress  # Import the compressor function
+    HAS_COMPRESSOR = True
+except ImportError as e:
+    logger = logging.getLogger(__name__)
+    logger.warning(f"Compressor not available: {e}. Compression features disabled.")
+    HAS_COMPRESSOR = False
+    
+    # Define a dummy function to prevent errors
+    async def stream_compress(*args, **kwargs):
+        logger.error("Compression not available - zipstream package missing")
+        return [], None
 
 from models import Task
 from enums import TaskStatus

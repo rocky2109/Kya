@@ -19,7 +19,20 @@ from enums import TaskStatus
 from models import Task
 from utils.formatting import format_size
 from utils.telegram_helpers import send_to_telegram, upload_zip_parts, delete_temp_messages, send_tracked_message, delete_tracked_messages
-from utils.compressor import stream_compress
+
+# Try to import compressor, with fallback
+try:
+    from utils.compressor import stream_compress
+    HAS_COMPRESSOR = True
+except ImportError:
+    logger = logging.getLogger(__name__)
+    logger.warning("Compressor not available. ZIP compression disabled.")
+    HAS_COMPRESSOR = False
+    
+    # Define a dummy function
+    async def stream_compress(*args, **kwargs):
+        return [], None
+
 from utils.debouncer import message_debouncer
 from utils.message_tracker import message_tracker  # Import message tracker for auto-deletion
 
@@ -459,32 +472,55 @@ async def download_playlist_with_quality(task_manager, client, video_downloader,
                 )
 
                 # --- Compress and Upload ---
-                zip_name = f"{safe_title}_{time.strftime('%Y%m%d_%H%M%S')}"
-                part_paths, temp_dir = await stream_compress(
-                    session.downloaded_files,
-                    zip_name,
-                    ZIP_PART_SIZE,
-                    task.chat_id,
-                    task,
-                    client,
-                    task_manager
-                )
+                if HAS_COMPRESSOR and len(session.downloaded_files) > 1:
+                    # Try to compress multiple files
+                    zip_name = f"{safe_title}_{time.strftime('%Y%m%d_%H%M%S')}"
+                    part_paths, temp_dir = await stream_compress(
+                        session.downloaded_files,
+                        zip_name,
+                        ZIP_PART_SIZE,
+                        task.chat_id,
+                        task,
+                        client,
+                        task_manager
+                    )
 
-                if part_paths:
-                    upload_success, status_msgs = await upload_zip_parts(client, task.chat_id, part_paths, task, task_manager)
-                    if upload_success:
-                        task.update_status(TaskStatus.COMPLETED)
-                        task.result_path = playlist_dir
+                    if part_paths:
+                        upload_success, status_msgs = await upload_zip_parts(client, task.chat_id, part_paths, task, task_manager)
+                        if upload_success:
+                            task.update_status(TaskStatus.COMPLETED)
+                            task.result_path = playlist_dir
+                        else:
+                            task.update_status(TaskStatus.FAILED, "Playlist upload failed")
+                            await client.send_message(task.chat_id, f"❌ Task {task.id}: Uploading compressed playlist parts failed.")
                     else:
-                        task.update_status(TaskStatus.FAILED, "Playlist upload failed")
-                        await client.send_message(task.chat_id, f"❌ Task {task.id}: Uploading compressed playlist parts failed.")
+                        logger.error(f"Task {task.id}: Compression failed for playlist.")
+                        await client.edit_message(
+                            task.chat_id, progress_msg_id,
+                            f"❌ Task {task.id}: Compression failed. Cannot upload playlist."
+                        )
+                        task.update_status(TaskStatus.FAILED, "Compression failed")
                 else:
-                    logger.error(f"Task {task.id}: Compression failed for playlist.")
+                    # Upload individual files without compression
+                    logger.info(f"Task {task.id}: Uploading individual files (compression disabled)")
                     await client.edit_message(
                         task.chat_id, progress_msg_id,
-                        f"❌ Task {task.id}: Compression failed. Cannot upload playlist."
+                        f"📤 Uploading {len(session.downloaded_files)} files individually..."
                     )
-                    task.update_status(TaskStatus.FAILED, "Compression failed")
+                    
+                    uploaded_count = 0
+                    for file_path in session.downloaded_files:
+                        try:
+                            success, _ = await send_to_telegram(client, file_path, task.chat_id, task, task_manager)
+                            if success:
+                                uploaded_count += 1
+                        except Exception as e:
+                            logger.error(f"Failed to upload {file_path}: {e}")
+                    
+                    if uploaded_count > 0:
+                        task.update_status(TaskStatus.COMPLETED, f"Playlist uploaded ({uploaded_count} files)")
+                    else:
+                        task.update_status(TaskStatus.FAILED, "No files uploaded")
 
             else:
                 # No videos downloaded successfully

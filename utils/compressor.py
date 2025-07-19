@@ -3,9 +3,23 @@ import time
 import logging
 import asyncio
 import shutil
-import zipstream_ng as zipstream
 import gc
 from typing import List, Tuple, Optional
+
+# Try to import zipstream package, fallback to zipfile if not available
+try:
+    import zipstream
+    HAS_ZIPSTREAM = True
+except ImportError:
+    import zipfile
+    HAS_ZIPSTREAM = False
+    zipfile = zipfile  # Ensure zipfile is available for fallback
+    logger = logging.getLogger(__name__)
+    logger.warning("zipstream not available, using standard zipfile (memory intensive for large files)")
+
+# Always import zipfile for fallback
+if 'zipfile' not in locals():
+    import zipfile
 
 # Assuming config and utils.formatting are in the parent directory or accessible
 from config import TEMP_DIR
@@ -19,6 +33,11 @@ logger = logging.getLogger(__name__)
 
 async def stream_compress(file_paths: List[str], zip_name: str, max_part_size: int, chat_id: int, task=None, client=None, task_manager=None) -> Tuple[List[Tuple[str, int]], Optional[str]]:
     """Stream compress files to disk with progress tracking using improved memory management"""
+    
+    if not HAS_ZIPSTREAM:
+        # Fallback to simple zipfile compression
+        return await _fallback_compress(file_paths, zip_name, max_part_size, chat_id, task, client, task_manager)
+    
     part_number = 1
     current_size = 0
     total_size = sum(os.path.getsize(path) for path in file_paths if os.path.exists(path))
@@ -182,3 +201,69 @@ async def stream_compress(file_paths: List[str], zip_name: str, max_part_size: i
              except Exception: pass # Ignore errors editing message here
 
         return [], None # Return empty list and no temp_dir on failure
+
+
+async def _fallback_compress(file_paths: List[str], zip_name: str, max_part_size: int, chat_id: int, task=None, client=None, task_manager=None) -> Tuple[List[Tuple[str, int]], Optional[str]]:
+    """Fallback compression using standard zipfile when zipstream_ng is not available"""
+    logger.info("Using fallback compression with standard zipfile")
+    
+    temp_dir = os.path.join(TEMP_DIR, f"compress_{chat_id}_{int(time.time())}")
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    try:
+        zip_path = os.path.join(temp_dir, f"{zip_name}.zip")
+        total_size = sum(os.path.getsize(path) for path in file_paths if os.path.exists(path))
+        
+        # Send progress message
+        progress_msg = None
+        if task and task.message_id and client:
+            try:
+                progress_msg = await client.get_messages(chat_id, ids=task.message_id)
+            except Exception:
+                progress_msg = None
+        
+        if not progress_msg and client:
+            try:
+                file_list = [os.path.basename(p) for p in file_paths]
+                file_str = ", ".join(file_list) if len(file_list) <= 3 else f"{len(file_list)} files"
+                progress_msg = await client.send_message(
+                    chat_id,
+                    f"🔄 Creating ZIP for {file_str}...\nUsing fallback compression...\n\n⚡Powered by @ZakulikaCompressor_bot"
+                )
+                if task and task_manager:
+                    task_manager.update_task(task.id, message_id=progress_msg.id)
+            except Exception as e:
+                logger.error(f"Failed to send progress message: {e}")
+        
+        # Create zip file
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for file_path in file_paths:
+                if os.path.exists(file_path):
+                    arcname = os.path.basename(file_path)
+                    zipf.write(file_path, arcname)
+                    logger.debug(f"Added {arcname} to zip")
+        
+        zip_size = os.path.getsize(zip_path)
+        
+        # Update progress message
+        if progress_msg and client:
+            try:
+                await client.edit_message(
+                    chat_id, 
+                    progress_msg.id, 
+                    f"✅ Compression complete!\n💾 Size: {format_size(zip_size)}\n\n⚡Powered by @ZakulikaCompressor_bot"
+                )
+            except Exception:
+                pass
+        
+        return [(zip_path, zip_size)], temp_dir
+        
+    except Exception as e:
+        logger.error(f"Error during fallback compression: {e}")
+        # Cleanup
+        if os.path.exists(temp_dir):
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception:
+                pass
+        return [], None
