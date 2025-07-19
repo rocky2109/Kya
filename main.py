@@ -24,6 +24,7 @@ from utils.formatting import format_size, format_time
 from utils.debouncer import message_debouncer
 from utils.telegram_helpers import delete_temp_messages # Import specific helpers
 from utils.message_tracker import message_tracker # Import our new message tracker
+from utils.user_cookies import user_cookies_manager # Import user cookies manager
 from task_manager import StalledDownloadCleaner # Import StalledDownloadCleaner
 
 # --- Download Handlers ---
@@ -468,9 +469,15 @@ async def start_handler(event):
         "• Send me a magnet link\n"
         "• Upload a torrent file\n"
         "• Send me a video URL (YouTube, etc.)\n\n"
-        "💾 I'll download and send the file(s) to you.\n"
+        "💾 I'll download and send the file(s) to you.\n\n"
+        "🍪 **New!** Upload your own cookies with `/setcookies` for:\n"
+        "• Better download success rates\n"
+        "• Access to private content (Instagram stories, etc.)\n"
+        "• No rate limits from shared cookies\n"
+        "• Support for YouTube, Instagram, TikTok, and more\n\n"
         "📋 Commands:\n"
         "• /help - Show detailed help\n"
+        "• /setcookies - Upload your cookies\n"
         "• /tasks - View your active tasks\n"
         "• /status - Check your usage stats\n"
         "• /cancel <task_id> - Cancel a task\n\n"
@@ -501,7 +508,19 @@ async def help_handler(event):
         "• `/help` - Show this help message.\n"
         "• `/tasks` - List your active and recent tasks.\n"
         "• `/status` - Show bot status and your usage.\n"
-        "• `/cancel <task_id>` - Cancel a queued task.\n"
+        "• `/cancel <task_id>` - Cancel a queued task.\n\n"
+        "🍪 **Cookie Management:**\n"
+        "• `/setcookies` - Upload your personal cookies for downloads.\n"
+        "• `/cookiestatus` - Check your cookie status.\n"
+        "• `/removecookies` - Remove your uploaded cookies.\n"
+        "• `/testcookies` - Test your cookies with a sample URL.\n\n"
+        "💡 **Why use personal cookies?**\n"
+        "• Avoid rate limits from shared cookies\n"
+        "• Access your private/premium content\n"
+        "• Download Instagram stories, reels, and private posts\n"
+        "• Better success rates for video downloads\n"
+        "• No interference from other users\n"
+        "• Support for multiple platforms simultaneously\n"
         # Add video/playlist commands if needed, or rely on URL detection
         # "• `/video <url>` - Download a single video.\n"
         # "• `/playlist <url>` - Download a playlist.\n"
@@ -759,6 +778,187 @@ async def delete_all_tasks_handler(event):
         await event.respond(f"❌ An error occurred: {e}")
 
 
+# --- Cookie Management Commands ---
+
+@client.on(events.NewMessage(pattern='/setcookies'))
+async def set_cookies_handler(event):
+    """Command to set user-specific cookies"""
+    user_id = event.sender_id
+    
+    help_text = (
+        "🍪 **Set Your Personal Cookies**\n\n"
+        "📝 **Instructions:**\n"
+        "1️⃣ Get your browser cookies for YouTube/Instagram/TikTok\n"
+        "2️⃣ Export them in Netscape format (.txt)\n"
+        "3️⃣ Upload the cookie file as a document\n"
+        "4️⃣ I'll save them for your downloads only\n\n"
+        "🔧 **How to get cookies:**\n"
+        "• **Chrome/Edge:** Use Cookie-Editor extension\n"
+        "• **Firefox:** Use Export Cookies extension\n"
+        "• **Manual:** Use browser developer tools\n\n"
+        "📱 **Instagram Cookie Guide:**\n"
+        "1. Login to Instagram in your browser\n"
+        "2. Browse some posts/stories to activate session\n"
+        "3. Use Cookie-Editor to export instagram.com cookies\n"
+        "4. Save as .txt file and upload here\n\n"
+        "📋 **Supported Platforms:**\n"
+        "• 🎥 **YouTube:** youtube.com cookies\n"
+        "• 📸 **Instagram:** instagram.com cookies\n"
+        "• 🎵 **TikTok:** tiktok.com cookies\n"
+        "• � **Twitter/X:** twitter.com, x.com cookies\n"
+        "• 📘 **Facebook:** facebook.com cookies\n\n"
+        "�💡 **Tips:**\n"
+        "• Include cookies from all platforms you want to download from\n"
+        "• For Instagram: Login and browse some content first\n"
+        "• Cookies expire automatically after 30 days\n"
+        "• Your cookies are private and only used for your downloads\n"
+        "• You can remove them anytime with `/removecookies`\n\n"
+        "📤 **Upload your cookie file now:**"
+    )
+    
+    await event.respond(help_text, parse_mode='markdown')
+
+
+@client.on(events.NewMessage(pattern='/cookiestatus'))
+async def cookie_status_handler(event):
+    """Command to check user's cookie status"""
+    user_id = event.sender_id
+    
+    cookie_info = user_cookies_manager.get_user_cookie_info(user_id)
+    
+    if cookie_info["has_cookies"]:
+        import datetime
+        created_date = datetime.datetime.fromtimestamp(cookie_info["created_at"]).strftime("%Y-%m-%d %H:%M:%S")
+        file_size = cookie_info["size"]
+        platforms = cookie_info.get("platforms", [])
+        
+        # Format platforms display
+        if platforms:
+            platforms_text = "📋 **Platforms:** " + ", ".join(f"• {p}" for p in platforms) + "\n"
+        else:
+            platforms_text = "📋 **Platforms:** Detection uncertain\n"
+        
+        status_text = (
+            "🍪 **Your Cookie Status**\n\n"
+            f"✅ **Status:** Active\n"
+            f"📅 **Uploaded:** {created_date}\n"
+            f"💾 **Size:** {file_size} bytes\n"
+            f"{platforms_text}"
+            f"⏰ **Expires:** Auto-deletion after 30 days\n\n"
+            "🔧 **Actions:**\n"
+            "• `/setcookies` - Update your cookies\n"
+            "• `/removecookies` - Remove your cookies\n"
+            "• `/testcookies` - Test your cookies with a sample download"
+        )
+    else:
+        status_text = (
+            "🍪 **Your Cookie Status**\n\n"
+            f"❌ **Status:** No cookies uploaded\n"
+            f"🌐 **Current:** Using global cookies (shared)\n\n"
+            "💡 **Why upload your own cookies?**\n"
+            "• Avoid rate limits from shared cookies\n"
+            "• Access your private videos/content (Instagram, etc.)\n"
+            "• Better success rate for downloads\n"
+            "• No interference from other users\n"
+            "• Download Instagram stories, reels, and private content\n\n"
+            "🎯 **Supported platforms:**\n"
+            "• YouTube, Instagram, TikTok, Twitter/X, Facebook\n\n"
+            "📤 **Get started:** `/setcookies`"
+        )
+    
+    await event.respond(status_text, parse_mode='markdown')
+
+
+@client.on(events.NewMessage(pattern='/removecookies'))
+async def remove_cookies_handler(event):
+    """Command to remove user's cookies"""
+    user_id = event.sender_id
+    
+    if not user_cookies_manager.has_user_cookies(user_id):
+        await event.respond(
+            "❌ **No cookies to remove**\n\n"
+            "You haven't uploaded any personal cookies yet.\n"
+            "Use `/setcookies` to upload your cookies first.",
+            parse_mode='markdown'
+        )
+        return
+    
+    # Remove the cookies
+    success = user_cookies_manager.remove_user_cookies(user_id)
+    
+    if success:
+        await event.respond(
+            "✅ **Cookies removed successfully!**\n\n"
+            "Your personal cookies have been deleted.\n"
+            "Future downloads will use the global cookies.\n\n"
+            "💡 You can upload new cookies anytime with `/setcookies`",
+            parse_mode='markdown'
+        )
+        logger.info(f"User {user_id} removed their cookies")
+    else:
+        await event.respond(
+            "❌ **Failed to remove cookies**\n\n"
+            "There was an error removing your cookies.\n"
+            "Please try again or contact support.",
+            parse_mode='markdown'
+        )
+
+
+@client.on(events.NewMessage(pattern='/testcookies'))
+async def test_cookies_handler(event):
+    """Command to test user's cookies with a sample download"""
+    user_id = event.sender_id
+    
+    if not user_cookies_manager.has_user_cookies(user_id):
+        await event.respond(
+            "❌ **No cookies to test**\n\n"
+            "You need to upload your cookies first.\n"
+            "Use `/setcookies` to upload your cookies.",
+            parse_mode='markdown'
+        )
+        return
+    
+    # Get user's detected platforms for personalized suggestions
+    cookie_info = user_cookies_manager.get_user_cookie_info(user_id)
+    platforms = cookie_info.get("platforms", [])
+    
+    # Create platform-specific test suggestions
+    test_suggestions = []
+    if "YouTube" in platforms:
+        test_suggestions.append("• A YouTube video (any public video)")
+    if "Instagram" in platforms:
+        test_suggestions.append("• An Instagram post/reel/story")
+    if "TikTok" in platforms:
+        test_suggestions.append("• A TikTok video")
+    if "Twitter/X" in platforms:
+        test_suggestions.append("• A Twitter/X video post")
+    if "Facebook" in platforms:
+        test_suggestions.append("• A Facebook video")
+    
+    # Fallback suggestions if no platforms detected
+    if not test_suggestions:
+        test_suggestions = [
+            "• A YouTube video (any public video)",
+            "• An Instagram post/reel", 
+            "• A TikTok video",
+            "• Any supported platform URL"
+        ]
+    
+    # Send test instructions
+    test_text = (
+        "🧪 **Test Your Cookies**\n\n"
+        "📝 **Instructions:**\n"
+        "1️⃣ Send me a URL from your uploaded platforms\n"
+        "2️⃣ I'll try to extract info using your cookies\n"
+        "3️⃣ If successful, your cookies are working!\n\n"
+        "💡 **Recommended test URLs based on your cookies:**\n"
+        + "\n".join(test_suggestions) + "\n\n"
+        "⚠️ **Note:** This will only test extraction, not full download."
+    )
+    
+    await event.respond(test_text, parse_mode='markdown')
+
+
 # --- Main Message Handler ---
 
 @client.on(events.NewMessage)
@@ -785,7 +985,64 @@ async def message_handler(event):
         task_added = None
         initial_message_sent = False # Flag to track if handler sent a message
 
-        # 1. Handle Torrent Files
+        # 1. Handle Cookie Files (.txt files after /setcookies command)
+        if event.file and event.file.name and event.file.name.lower().endswith('.txt'):
+            # Check if user recently used /setcookies (within last 5 minutes)
+            # This is a simple way to distinguish cookie files from other .txt files
+            import time
+            current_time = time.time()
+            
+            # For simplicity, we'll accept .txt files and validate them as cookies
+            # In production, you might want to track command state more robustly
+            if event.file.size > 1024 * 1024:  # 1MB limit for cookie files
+                await event.respond("❌ Cookie file is too large (max 1MB).")
+                return
+            
+            try:
+                # Download the cookie file
+                cookie_data = await client.download_media(event.message, bytes)
+                cookie_content = cookie_data.decode('utf-8')
+                
+                # Validate and save cookies
+                success, message = user_cookies_manager.save_user_cookies(user_id, cookie_content)
+                
+                if success:
+                    await event.respond(
+                        "✅ **Cookies uploaded successfully!**\n\n"
+                        f"📁 **File:** {event.file.name}\n"
+                        f"💾 **Size:** {len(cookie_content)} characters\n"
+                        f"🎯 **Detected:** {message.replace('Successfully saved cookies for: ', '')}\n"
+                        f"🔒 **Privacy:** Only used for your downloads\n\n"
+                        "💡 **Next steps:**\n"
+                        "• Test with `/testcookies`\n"
+                        "• Check status with `/cookiestatus`\n"
+                        "• Remove with `/removecookies`\n\n"
+                        "🎯 Your future downloads will use these cookies!",
+                        parse_mode='markdown'
+                    )
+                    logger.info(f"User {user_id} uploaded cookies successfully: {message}")
+                    return  # Cookie processed, don't continue to other handlers
+                else:
+                    await event.respond(
+                        f"❌ **Invalid cookie file**\n\n"
+                        f"**Error:** {message}\n\n"
+                        "📝 **Requirements:**\n"
+                        "• Netscape format (.txt) or JSON format\n"
+                        "• Valid cookie entries from supported platforms\n"
+                        "• Exported from browser or extension\n\n"
+                        "🔧 **Supported platforms:**\n"
+                        "• YouTube, Instagram, TikTok, Twitter/X, Facebook\n\n"
+                        "💡 Try using `/setcookies` for detailed instructions.",
+                        parse_mode='markdown'
+                    )
+                    return
+                    
+            except Exception as e:
+                logger.error(f"Error processing cookie file from user {user_id}: {e}")
+                await event.respond(f"❌ Error processing cookie file: {e}")
+                return
+
+        # 2. Handle Torrent Files
         if event.file and event.file.name and event.file.name.lower().endswith('.torrent'):
             if event.file.size > 5 * 1024 * 1024: # 5MB limit for torrent files
                 await event.respond("❌ Torrent file is too large (max 5MB).")

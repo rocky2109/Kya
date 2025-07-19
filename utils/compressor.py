@@ -6,16 +6,43 @@ import shutil
 import gc
 from typing import List, Tuple, Optional
 
+logger = logging.getLogger(__name__)
+
 # Try to import zipstream package, fallback to zipfile if not available
 try:
     import zipstream
     HAS_ZIPSTREAM = True
+    
+    # Try to determine which zipstream version we have
+    if hasattr(zipstream, '__version__'):
+        logger.info(f"zipstream version: {zipstream.__version__}")
+    
+    # Test zipstream initialization to detect API
+    try:
+        if hasattr(zipstream, 'ZipFile'):
+            test_zip = zipstream.ZipFile()
+            ZIPSTREAM_CLASS = 'ZipFile'
+        elif hasattr(zipstream, 'ZipStream'):
+            test_zip = zipstream.ZipStream()
+            ZIPSTREAM_CLASS = 'ZipStream'
+        else:
+            raise ImportError("No ZipFile or ZipStream class found")
+            
+        test_zip = None  # Clean up test object
+        ZIPSTREAM_INIT_METHOD = "default"
+        logger.info(f"zipstream.{ZIPSTREAM_CLASS}() works with default constructor")
+    except Exception as e:
+        logger.warning(f"zipstream initialization failed: {e}")
+        ZIPSTREAM_INIT_METHOD = "fallback"
+        ZIPSTREAM_CLASS = None
+        
 except ImportError:
     import zipfile
     HAS_ZIPSTREAM = False
+    ZIPSTREAM_INIT_METHOD = None
+    ZIPSTREAM_CLASS = None
     zipfile = zipfile  # Ensure zipfile is available for fallback
 
-logger = logging.getLogger(__name__)
 if not HAS_ZIPSTREAM:
     logger.warning("zipstream not available, using standard zipfile (memory intensive for large files)")
 
@@ -108,29 +135,58 @@ async def stream_compress(file_paths: List[str], zip_name: str, max_part_size: i
             except Exception as e:
                 logger.error(f"Failed to send initial progress message: {e}")
 
-        # Create zipstream generator
+        # Create zipstream generator using the pre-tested method
         try:
-            # Check what's available in the zipstream module
-            logger.debug(f"zipstream module attributes: {dir(zipstream)}")
+            logger.info(f"zipstream module available: {HAS_ZIPSTREAM}, class: {ZIPSTREAM_CLASS}, init method: {ZIPSTREAM_INIT_METHOD}")
             
-            # Try different zipstream APIs
-            if hasattr(zipstream, 'ZipFile'):
-                # Standard zipstream API
-                z = zipstream.ZipFile(compression=zipstream.ZIP_DEFLATED, allowZip64=True)
-                logger.info("Using zipstream.ZipFile for compression")
-            elif hasattr(zipstream, 'ZipStream'):
-                # Alternative API name
-                z = zipstream.ZipStream(compression=zipstream.ZIP_DEFLATED, allowZip64=True)
-                logger.info("Using zipstream.ZipStream for compression")
+            if ZIPSTREAM_INIT_METHOD == "default" and ZIPSTREAM_CLASS:
+                # Use the method we know works
+                zipstream_class = getattr(zipstream, ZIPSTREAM_CLASS)
+                z = zipstream_class()
+                logger.info(f"Using zipstream.{ZIPSTREAM_CLASS}() with default constructor")
             else:
-                # Check for any callable with 'Zip' in the name
-                zip_classes = [attr for attr in dir(zipstream) if 'Zip' in attr and callable(getattr(zipstream, attr))]
-                if zip_classes:
-                    zip_class = getattr(zipstream, zip_classes[0])
-                    z = zip_class(compression=getattr(zipstream, 'ZIP_DEFLATED', 8), allowZip64=True)
-                    logger.info(f"Using zipstream.{zip_classes[0]} for compression")
-                else:
-                    raise ImportError(f"No usable ZIP class found in zipstream module. Available: {dir(zipstream)}")
+                # Try different approaches for compatibility
+                z = None
+                
+                # Try ZipStream first (more common in zipstream-ng)
+                if hasattr(zipstream, 'ZipStream'):
+                    for init_args in [
+                        {},  # No arguments
+                        {'allowZip64': True},  # With allowZip64
+                        {'compress_type': 8},  # With compress_type (ZIP_DEFLATED = 8)
+                    ]:
+                        try:
+                            z = zipstream.ZipStream(**init_args)
+                            logger.info(f"Using zipstream.ZipStream with args: {init_args}")
+                            break
+                        except TypeError as te:
+                            logger.debug(f"zipstream.ZipStream failed with {init_args}: {te}")
+                            continue
+                        except Exception as e:
+                            logger.debug(f"zipstream.ZipStream unexpected error with {init_args}: {e}")
+                            continue
+                
+                # Try ZipFile if ZipStream failed
+                if z is None and hasattr(zipstream, 'ZipFile'):
+                    for init_args in [
+                        {},  # No arguments
+                        {'allowZip64': True},  # With allowZip64
+                        {'compress_type': 8},  # With compress_type (ZIP_DEFLATED = 8)
+                    ]:
+                        try:
+                            z = zipstream.ZipFile(**init_args)
+                            logger.info(f"Using zipstream.ZipFile with args: {init_args}")
+                            break
+                        except TypeError as te:
+                            logger.debug(f"zipstream.ZipFile failed with {init_args}: {te}")
+                            continue
+                        except Exception as e:
+                            logger.debug(f"zipstream.ZipFile unexpected error with {init_args}: {e}")
+                            continue
+                
+                if z is None:
+                    raise ImportError("Could not initialize any zipstream class")
+                    
         except Exception as e:
             logger.warning(f"Failed to create zipstream object: {e}")
             logger.info("Falling back to standard zipfile compression")
@@ -148,7 +204,28 @@ async def stream_compress(file_paths: List[str], zip_name: str, max_part_size: i
                 else:
                     # For multiple files or single files, use basename
                     arcname = os.path.basename(file_path)
-                z.write(file_path, arcname=arcname)
+                
+                # Try different methods to add files (zipstream-ng compatibility)
+                try:
+                    if hasattr(z, 'add'):
+                        # zipstream-ng uses add() method
+                        z.add(file_path, arcname=arcname)
+                        logger.debug(f"Added {arcname} to zipstream using add()")
+                    elif hasattr(z, 'write'):
+                        # Standard zipstream uses write() method
+                        z.write(file_path, arcname=arcname)
+                        logger.debug(f"Added {arcname} to zipstream using write()")
+                    elif hasattr(z, 'writestr'):
+                        # Fallback: read file and use writestr
+                        with open(file_path, 'rb') as f:
+                            z.writestr(arcname, f.read())
+                        logger.debug(f"Added {arcname} to zipstream using writestr()")
+                    else:
+                        raise AttributeError("No suitable method found to add files to zipstream")
+                except Exception as e:
+                    logger.warning(f"Failed to add {file_path} to zipstream: {e}")
+                    # If adding files fails, fall back to standard compression
+                    return await _fallback_compress(file_paths, zip_name, max_part_size, chat_id, task, client, task_manager)
         
         # Always start writing to a part file
         part_path = os.path.join(temp_dir, f"{zip_name}.zip.{part_number:03d}")

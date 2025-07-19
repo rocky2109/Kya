@@ -48,6 +48,17 @@ class VideoDownloader:
                 logger.error(f"Failed to create placeholder cookies file: {e}")
                 self.cookies_file = None
         
+    def _get_cookies_for_user(self, user_id: Optional[int] = None) -> Optional[str]:
+        """Get appropriate cookies file for a user"""
+        if user_id:
+            try:
+                from utils.user_cookies import user_cookies_manager
+                return user_cookies_manager.get_user_cookies(user_id)
+            except ImportError:
+                logger.warning("user_cookies module not available, using default cookies")
+        
+        return self.cookies_file
+        
     def detect_source(self, url: str) -> Tuple[VideoSource, str]:
         """Detect the source platform and extract video ID from URL"""
         for source, pattern in self.URL_PATTERNS.items():
@@ -76,7 +87,7 @@ class VideoDownloader:
             return f"{bytes_size / 1_000:.1f} KB"
         return f"{bytes_size} Bytes"
     
-    async def get_video_info(self, url: str) -> Dict[str, Any]:
+    async def get_video_info(self, url: str, user_id: Optional[int] = None) -> Dict[str, Any]:
         try:
             logger.info(f"Processing URL: {url}")
             source, _ = self.detect_source(url)
@@ -126,14 +137,15 @@ class VideoDownloader:
                 }
             }
             
-            # Add cookies file if provided
-            if self.cookies_file and os.path.exists(self.cookies_file):
-                ydl_opts['cookiefile'] = self.cookies_file
-                logger.info(f"Using cookies file: {self.cookies_file}")
+            # Use user-specific cookies if available
+            cookies_file = self._get_cookies_for_user(user_id)
+            if cookies_file and os.path.exists(cookies_file):
+                ydl_opts['cookiefile'] = cookies_file
+                logger.info(f"Using cookies file for user {user_id}: {cookies_file}")
             
             # Special handling for Instagram
             if source == VideoSource.INSTAGRAM:
-                return await self.get_instagram_info(url)
+                return await self.get_instagram_info(url, user_id)
             
             # Run yt-dlp in a separate thread to avoid blocking
             loop = asyncio.get_event_loop()
@@ -305,7 +317,7 @@ class VideoDownloader:
             'playlist_count': len(entries)
         }
     
-    async def download_video(self, url: str, format_id: str, output_path: str, progress_callback=None) -> Dict[str, Any]:
+    async def download_video(self, url: str, format_id: str, output_path: str, progress_callback=None, user_id: Optional[int] = None) -> Dict[str, Any]:
         """Download video in specified format with progress tracking"""
         ydl_opts = {}
         temp_files = []  # Track temporary files for cleanup
@@ -363,9 +375,11 @@ class VideoDownloader:
                         asyncio.run_coroutine_threadsafe(progress_callback(d_yt_dlp), loop)
                 ydl_opts['progress_hooks'] = [sync_hook]
             
-            # Add cookies file if provided and exists
-            if self.cookies_file and os.path.exists(self.cookies_file):
-                ydl_opts['cookiefile'] = self.cookies_file
+            # Use user-specific cookies if available
+            cookies_file = self._get_cookies_for_user(user_id)
+            if cookies_file and os.path.exists(cookies_file):
+                ydl_opts['cookiefile'] = cookies_file
+                logger.info(f"Using cookies file for user {user_id}: {cookies_file}")
             
             # Special handling for Instagram
             if source == VideoSource.INSTAGRAM:
@@ -493,7 +507,7 @@ class VideoDownloader:
             
             return {'success': False, 'error': f"Download failed: {str(e)}"}
     
-    async def download_playlist(self, url: str, format_id: str, output_dir: str, progress_callback=None) -> Dict[str, Any]:
+    async def download_playlist(self, url: str, format_id: str, output_dir: str, progress_callback=None, user_id: Optional[int] = None) -> Dict[str, Any]:
         """Download all videos in a playlist with progress reporting"""
         try:
         # Get playlist info
@@ -561,7 +575,7 @@ class VideoDownloader:
                         logger.info(f"Fixed video URL to: {video_url}")
 
                     # Download the video
-                    result = await self.download_video(video_url, format_id, output_path)
+                    result = await self.download_video(video_url, format_id, output_path, user_id=user_id)
 
                     # Report completion status
                     if progress_callback:
@@ -620,7 +634,7 @@ class VideoDownloader:
             logger.error(f"Error downloading playlist: {e}", exc_info=True)
             return {'success': False, 'error': str(e)}
     
-    async def get_instagram_info(self, url: str) -> Dict[str, Any]:
+    async def get_instagram_info(self, url: str, user_id: Optional[int] = None) -> Dict[str, Any]:
         """Special handling for Instagram links which may need different options"""
         try:
             # Enhanced options specifically for Instagram
@@ -652,9 +666,11 @@ class VideoDownloader:
                 }
             }
             
-            # Add cookies file if provided
-            if self.cookies_file and os.path.exists(self.cookies_file):
-                ydl_opts['cookiefile'] = self.cookies_file
+            # Use user-specific cookies if available
+            cookies_file = self._get_cookies_for_user(user_id)
+            if cookies_file and os.path.exists(cookies_file):
+                ydl_opts['cookiefile'] = cookies_file
+                logger.info(f"Using cookies file for user {user_id}: {cookies_file}")
             
             # Log the URL being processed
             logger.info(f"Processing Instagram URL: {url}")
