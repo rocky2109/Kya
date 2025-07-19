@@ -173,6 +173,44 @@
 4. Add more specific error handling for your use case
 5. **NEW**: Encourage users to upload Instagram cookies for better success rates
 
+## 4. Compression System Creating Empty ZIP Files (NEW FIX) ⭐
+**Problem**: Large files (10GB) being compressed to tiny 4.07KB ZIP files instead of proper multi-part archives
+**Root Cause**: Multiple issues in zipstream processing and file validation
+**Fix Applied**: Comprehensive compression system overhaul in `utils/compressor.py`
+
+### Specific Compression Fixes:
+1. **File Validation Before Adding to ZIP**:
+   - Added file size validation (skip empty files)
+   - Added file readability verification before adding to zipstream
+   - Enhanced error logging for file access issues
+
+2. **Zipstream Iterator Validation**:
+   - Added zipstream iterator testing before processing
+   - Added validation that zipstream generates content chunks
+   - Implemented automatic fallback to standard zipfile if zipstream fails
+
+3. **Chunk Processing Improvements**:
+   - Added validation for empty chunks from zipstream
+   - Enhanced logging of chunk sizes and total data written
+   - Added detection of zero-data scenarios with automatic fallback
+
+4. **ZIP File Validation**:
+   - Added minimum size validation for generated ZIP files (>50 bytes)
+   - Added ZIP file integrity checking using zipfile.ZipFile
+   - Added validation that ZIP contains expected number of files
+   - Enhanced error reporting for corrupted or empty ZIP files
+
+5. **Enhanced Error Handling**:
+   - Improved error detection and automatic fallback mechanisms
+   - Better logging for compression workflow debugging
+   - Comprehensive validation at each step of compression process
+
+### Technical Details:
+- Zipstream compatibility testing for different API versions
+- Multi-part archive creation for files exceeding 2GB Telegram limit
+- Memory-efficient chunked processing for large files
+- Robust error recovery and fallback strategies
+
 ## Testing Recommendations
 1. Test with various YouTube video types (age-restricted, premium, etc.)
 2. Test Instagram downloads with different content types (posts, reels, stories)
@@ -181,3 +219,5 @@
 5. Test large torrent downloads with compression
 6. Monitor message deletion behavior to ensure important messages are preserved
 7. **NEW**: Test fallback extraction system with problematic Instagram URLs
+8. **NEW**: Test compression system with various file sizes (small, medium, >2GB)
+9. **NEW**: Verify multi-part archive creation and integrity
