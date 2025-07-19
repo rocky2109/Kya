@@ -1,0 +1,72 @@
+{
+  "name": "Telegram Zakulika AIO Downloader",
+  "description": "A Telegram bot for downloading files, torrents, and videos",
+  "repository": "https://github.com/MMXV16/telegram-zakulika-AIO-downloader",
+  "logo": "https://telegram.org/img/t_logo.png",
+  "keywords": ["telegram", "bot", "downloader", "torrent", "video"],
+  "stack": "heroku-20",
+  "env": {
+    "API_ID": {
+      "description": "Your Telegram API ID from https://my.telegram.org/apps",
+      "required": true
+    },
+    "API_HASH": {
+      "description": "Your Telegram API Hash from https://my.telegram.org/apps",
+      "required": true
+    },
+    "BOT_TOKEN": {
+      "description": "Your bot token from @BotFather",
+      "required": true
+    },
+    "ADMIN_USER_IDS": {
+      "description": "Comma-separated list of admin Telegram user IDs",
+      "required": true
+    },
+    "MAX_CONCURRENT_DOWNLOADS": {
+      "description": "Maximum concurrent downloads",
+      "value": "3",
+      "required": false
+    },
+    "MAX_CONCURRENT_TORRENTS": {
+      "description": "Maximum concurrent torrent downloads",
+      "value": "2",
+      "required": false
+    },
+    "MAX_TASKS_PER_USER": {
+      "description": "Maximum tasks per user",
+      "value": "5",
+      "required": false
+    },
+    "HOURLY_TASKS_LIMIT": {
+      "description": "Tasks per hour limit per user",
+      "value": "10",
+      "required": false
+    },
+    "DAILY_TASKS_LIMIT": {
+      "description": "Tasks per day limit per user",
+      "value": "30",
+      "required": false
+    },
+    "DAILY_DATA_LIMIT_GB": {
+      "description": "Daily data limit in GB per user",
+      "value": "20",
+      "required": false
+    },
+    "WEEKLY_DATA_LIMIT_GB": {
+      "description": "Weekly data limit in GB per user",
+      "value": "100",
+      "required": false
+    }
+  },
+  "formation": {
+    "worker": {
+      "quantity": 1,
+      "size": "eco"
+    }
+  },
+  "buildpacks": [
+    {
+      "url": "heroku/python"
+    }
+  ]
+}

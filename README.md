@@ -36,6 +36,14 @@ A powerful Telegram bot that can download files from various sources including d
 
 ### Installation
 
+## Quick Deploy to Heroku
+
+[![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/MMXV16/telegram-zakulika-AIO-downloader)
+
+For detailed Heroku deployment instructions, see [HEROKU_DEPLOYMENT.md](HEROKU_DEPLOYMENT.md).
+
+## Local Installation
+
 1. Clone the repository:
    ```bash
    git clone https://github.com/MMXV16/telegram-zakulika-AIO-downloader.git

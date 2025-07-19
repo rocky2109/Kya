@@ -2,11 +2,43 @@ config.py
 youtube_cookies.txt
 sessions/
 torrent_bot_db/
+downloads/
+temp/
 *.db
 *.sqlite
 __pycache__/
 .env
 *.env
-# VS Code settings
-.vscode/
 *.log
+
+# IDE settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
