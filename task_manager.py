@@ -221,6 +221,62 @@ class TaskManager:
         # require more complex inter-process/thread communication.
         return True
 
+    def admin_delete_all_tasks(self, admin_user_id: int) -> bool:
+        """Delete all tasks for the admin and all users at once. Admin only function."""
+        if admin_user_id not in ADMIN_USER_IDS:
+            logger.warning(f"Non-admin user {admin_user_id} attempted to delete all tasks")
+            return False
+
+        logger.info(f"Admin {admin_user_id} initiated deletion of all tasks")
+        
+        # Clear all queues
+        queues = [
+            self.download_queue,
+            self.torrent_queue,
+            self.magnet_queue,
+            self.zip_queue,
+            self.video_queue,
+            self.playlist_queue
+        ]
+        
+        total_queued_removed = 0
+        for queue in queues:
+            queue_size = queue.qsize()
+            # Clear the queue by creating a new one
+            queue._queue.clear()
+            total_queued_removed += queue_size
+        
+        # Clean up all task files and directories
+        removed_files = 0
+        for task_id, task in list(self.tasks.items()):
+            try:
+                # Clean up any result files/directories
+                if task.result_path and os.path.exists(task.result_path):
+                    try:
+                        if os.path.isfile(task.result_path):
+                            os.remove(task.result_path)
+                        elif os.path.isdir(task.result_path):
+                            shutil.rmtree(task.result_path)
+                        removed_files += 1
+                        logger.debug(f"Cleaned up result path for task {task_id}: {task.result_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to clean up result path for task {task_id}: {e}")
+            except Exception as e:
+                logger.error(f"Error cleaning up task {task_id}: {e}")
+        
+        # Clear all task data
+        total_tasks = len(self.tasks)
+        self.tasks.clear()
+        self.user_tasks.clear()
+        
+        # Save empty state to disk
+        self._save_tasks()
+        
+        logger.info(f"Admin deletion complete: Removed {total_tasks} tasks, "
+                   f"{total_queued_removed} queued items, and {removed_files} files")
+        
+        return True
+
     def clean_old_tasks(self, older_than_days: int = 7):
         """Remove old completed/failed/cancelled tasks and potentially stuck tasks from memory and disk"""
         now = time.time()

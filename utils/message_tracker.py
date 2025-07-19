@@ -28,7 +28,7 @@ class MessageTracker:
         task.add_temp_message(message_id)
         
         # If delay specified, schedule for auto-deletion
-        if delay is not None:
+        if delay is not None and delay > 0:
             task_key = f"{task.id}_{message_id}"
             
             # Cancel existing cleanup task for this message if it exists

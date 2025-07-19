@@ -479,6 +479,8 @@ async def start_handler(event):
 
 @client.on(events.NewMessage(pattern='/help'))
 async def help_handler(event):
+    user_id = event.sender_id
+    
     help_text = (
         "📚 **Zakulika AIO Downloader Bot Help**\n\n"
         "🤖 **About:**\n"
@@ -504,6 +506,15 @@ async def help_handler(event):
         # "• `/video <url>` - Download a single video.\n"
         # "• `/playlist <url>` - Download a playlist.\n"
     )
+    
+    # Add admin commands for admin users
+    if user_id in config.ADMIN_USER_IDS:
+        admin_help = (
+            "\n🔧 **Admin Commands:**\n"
+            "• `/delete_all_tasks` - Delete all tasks for all users (with confirmation).\n"
+        )
+        help_text += admin_help
+    
     await event.respond(help_text, parse_mode='markdown')
 
 
@@ -665,6 +676,87 @@ async def status_command(event):
     # Send the combined or user-only status
     if user_id not in config.ADMIN_USER_IDS: # Avoid sending twice for admin
          await event.respond(status_text, parse_mode='markdown')
+
+
+@client.on(events.NewMessage(pattern='/delete_all_tasks'))
+async def delete_all_tasks_handler(event):
+    """Admin command to delete all tasks for all users"""
+    user_id = event.sender_id
+    
+    if user_id not in config.ADMIN_USER_IDS:
+        await event.respond("❌ This command is restricted to administrators only.")
+        return
+    
+    # Confirmation prompt
+    confirmation_msg = await event.respond(
+        "⚠️ **WARNING: This will delete ALL tasks for ALL users!**\n\n"
+        "This includes:\n"
+        "• All queued tasks\n"
+        "• All running tasks\n"
+        "• All task history\n"
+        "• All downloaded files\n\n"
+        "Reply with `CONFIRM DELETE` to proceed or `CANCEL` to abort.\n\n"
+        "*This action cannot be undone.*",
+        parse_mode='markdown'
+    )
+    
+    try:
+        # Wait for user's reply
+        def check_reply(event):
+            return (event.sender_id == user_id and 
+                   event.is_reply and 
+                   event.reply_to_msg_id == confirmation_msg.id)
+        
+        # Wait for reply with timeout
+        reply_event = await client.wait_for(events.NewMessage, 
+                                           condition=check_reply, 
+                                           timeout=30)
+        
+        reply_text = reply_event.message.text.strip().upper()
+        
+        if reply_text == 'CONFIRM DELETE':
+            # Proceed with deletion
+            processing_msg = await event.respond("🔄 Processing deletion of all tasks...")
+            
+            success = task_manager.admin_delete_all_tasks(user_id)
+            
+            if success:
+                await processing_msg.edit(
+                    "✅ **All tasks deleted successfully!**\n\n"
+                    "All user tasks, queues, and associated files have been removed.",
+                    parse_mode='markdown'
+                )
+                logger.info(f"Admin {user_id} successfully deleted all tasks")
+            else:
+                await processing_msg.edit(
+                    "❌ **Failed to delete all tasks.**\n\n"
+                    "Please check the logs for more information."
+                )
+                logger.error(f"Admin {user_id} failed to delete all tasks")
+        elif reply_text == 'CANCEL':
+            # User cancelled
+            await event.respond(
+                "❌ **Operation cancelled.**\n\n"
+                "No tasks were deleted.",
+                parse_mode='markdown'
+            )
+        else:
+            # Invalid response
+            await event.respond(
+                "❌ **Invalid response.**\n\n"
+                "Please reply with `CONFIRM DELETE` or `CANCEL` exactly.",
+                parse_mode='markdown'
+            )
+    
+    except asyncio.TimeoutError:
+        await event.respond(
+            "⏰ **Confirmation timeout.**\n\n"
+            "Operation cancelled due to no response within 30 seconds.",
+            parse_mode='markdown'
+        )
+    except Exception as e:
+        logger.error(f"Error in delete_all_tasks_handler: {e}")
+        await event.respond(f"❌ An error occurred: {e}")
 
 
 # --- Main Message Handler ---

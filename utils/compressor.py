@@ -38,9 +38,26 @@ async def stream_compress(file_paths: List[str], zip_name: str, max_part_size: i
         # Fallback to simple zipfile compression
         return await _fallback_compress(file_paths, zip_name, max_part_size, chat_id, task, client, task_manager)
     
+    # Validate inputs
+    if not file_paths:
+        logger.error("No file paths provided for compression")
+        return [], "No files to compress"
+        
+    # Check if all files exist
+    valid_files = []
+    for file_path in file_paths:
+        if os.path.exists(file_path):
+            valid_files.append(file_path)
+        else:
+            logger.warning(f"File not found, skipping: {file_path}")
+    
+    if not valid_files:
+        logger.error("No valid files found for compression")
+        return [], "No valid files to compress"
+    
     part_number = 1
     current_size = 0
-    total_size = sum(os.path.getsize(path) for path in file_paths if os.path.exists(path))
+    total_size = sum(os.path.getsize(path) for path in valid_files)
     processed_size = 0
     last_update_time = time.time()
 
@@ -55,7 +72,7 @@ async def stream_compress(file_paths: List[str], zip_name: str, max_part_size: i
     current_zipfile = None
 
     # Better file description for progress messages
-    file_list = [os.path.basename(p) for p in file_paths]
+    file_list = [os.path.basename(p) for p in valid_files]
     file_str = ", ".join(file_list) if len(file_list) <= 3 else f"{len(file_list)} files"
     progress_msg = None
 
@@ -88,16 +105,21 @@ async def stream_compress(file_paths: List[str], zip_name: str, max_part_size: i
 
             part_suffix = f".part{part_number:03d}.zip" if multipart_generated or total_size > max_part_size else ".zip"
             current_part_path = os.path.join(temp_dir, f"{zip_name}{part_suffix}")
-            current_zipfile = open(current_part_path, 'wb')
-            current_zipstream = zipstream.ZipFile(mode='w', compression=zipstream.ZIP_DEFLATED, allowZip64=True)
-            part_number += 1
-            return current_zipstream, current_zipfile, current_part_path
-
+            
+            try:
+                current_zipfile = open(current_part_path, 'wb')
+                current_zipstream = zipstream.ZipFile(mode='w', compression=zipstream.ZIP_DEFLATED, allowZip64=True)
+                part_number += 1
+                return current_zipstream, current_zipfile, current_part_path
+            except Exception as e:
+                logger.error(f"Failed to create new compression part: {e}")
+                raise
+        
         # Start the first part
         current_zipstream, current_zipfile, current_part_path = start_new_part()
         last_progress_text = ""
 
-        for file_path in file_paths:
+        for file_path in valid_files:
             if not os.path.exists(file_path):
                 logger.warning(f"File not found during compression: {file_path}")
                 continue
@@ -152,7 +174,8 @@ async def stream_compress(file_paths: List[str], zip_name: str, max_part_size: i
 
             except Exception as e:
                 logger.error(f"Error adding file {file_path} to zip: {e}")
-                # Optionally: Decide whether to skip the file or abort
+                # Continue with next file instead of aborting completely
+                continue
 
         # Finalize the last part
         if current_zipfile:
@@ -200,9 +223,7 @@ async def stream_compress(file_paths: List[str], zip_name: str, max_part_size: i
                  await client.edit_message(chat_id, progress_msg.id, f"❌ Compression failed: {e}")
              except Exception: pass # Ignore errors editing message here
 
-        return [], None # Return empty list and no temp_dir on failure
-
-
+        return [], f"Compression failed: {e}" # Return error message instead of None
 async def _fallback_compress(file_paths: List[str], zip_name: str, max_part_size: int, chat_id: int, task=None, client=None, task_manager=None) -> Tuple[List[Tuple[str, int]], Optional[str]]:
     """Fallback compression using standard zipfile when zipstream_ng is not available"""
     logger.info("Using fallback compression with standard zipfile")

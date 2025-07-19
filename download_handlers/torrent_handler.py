@@ -304,10 +304,9 @@ async def handle_torrent(task_manager, client, user_stats_manager, file_path: st
                     f"📦 Name: {torrent_name}\n"
                     f"💾 Size: {format_size(total_size)}"
                 )
-                # Schedule for auto-deletion
+                # Don't schedule auto-deletion for main progress message - only delete on success/failure
                 if task:
                     task.add_temp_message(progress_msg_id)
-                    await message_tracker.schedule_deletion(client, task, progress_msg_id, 600)  # 10 minutes timeout
             except Exception as e:
                  logger.warning(f"Task {task.id}: Failed to edit initial torrent message: {e}")
                  # Continue anyway
@@ -404,6 +403,12 @@ async def handle_torrent(task_manager, client, user_stats_manager, file_path: st
                 )
 
                 # Send file to Telegram (will delete progress message on success)
+                # Verify the download path exists before sending
+                if not os.path.exists(download_path):
+                    logger.error(f"Download path does not exist: {download_path}")
+                    raise FileNotFoundError(f"Downloaded content not found at: {download_path}")
+                
+                logger.info(f"Task {task.id if task else 'N/A'}: Sending torrent content from {download_path}")
                 await send_to_telegram(client, download_path, chat_id, task, task_manager)
                 
                 # Clean up any remaining tracked messages

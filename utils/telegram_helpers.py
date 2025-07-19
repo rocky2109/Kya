@@ -195,7 +195,154 @@ async def send_to_telegram(client, file_path: str, chat_id: int, task: Optional[
              if task_manager: task_manager._save_task(task)
         return
 
-    file_size = os.path.getsize(file_path)
+    # Sanitize file path to fix special character issues
+    original_file_path = file_path
+    if os.path.isfile(file_path):
+        # Check if file contains problematic characters and rename if needed
+        dir_path = os.path.dirname(file_path)
+        filename = os.path.basename(file_path)
+        # Replace problematic characters
+        safe_filename = re.sub(r'[<>:"/\\|?*\[\]]', '_', filename)
+        if safe_filename != filename:
+            new_file_path = os.path.join(dir_path, safe_filename)
+            try:
+                os.rename(file_path, new_file_path)
+                file_path = new_file_path
+                logger.info(f"Renamed file to safe path: {file_path}")
+            except Exception as e:
+                logger.warning(f"Failed to rename file to safe path: {e}")
+    elif os.path.isdir(file_path):
+        # Handle directory case - rename if needed
+        dir_path = os.path.dirname(file_path)
+        dirname = os.path.basename(file_path)
+        safe_dirname = re.sub(r'[<>:"/\\|?*\[\]]', '_', dirname)
+        if safe_dirname != dirname:
+            new_dir_path = os.path.join(dir_path, safe_dirname)
+            try:
+                os.rename(file_path, new_dir_path)
+                file_path = new_dir_path
+                logger.info(f"Renamed directory to safe path: {file_path}")
+            except Exception as e:
+                logger.warning(f"Failed to rename directory to safe path: {e}")
+
+    if os.path.isfile(file_path):
+        file_size = os.path.getsize(file_path)
+        filename = os.path.basename(file_path)
+        
+        # Check if file is too large and needs compression
+        if file_size > MAX_FILE_SIZE and HAS_COMPRESSOR:
+            logger.info(f"File {filename} ({format_size(file_size)}) exceeds limit, compressing...")
+            if task and task.message_id:
+                try:
+                    await client.edit_message(chat_id, task.message_id, 
+                        f"📦 Task {task.id}: File too large, creating ZIP archive...\n"
+                        f"File: {filename}\nSize: {format_size(file_size)}")
+                except Exception: pass
+            
+            # Compress the file
+            zip_name = f"{os.path.splitext(filename)[0]}.zip"
+            part_paths, error = await stream_compress([file_path], zip_name, ZIP_PART_SIZE, chat_id, task, client, task_manager)
+            
+            if error or not part_paths:
+                error_msg = error or "Compression failed - no parts created"
+                logger.error(f"File compression failed: {error_msg}")
+                if task and task.message_id:
+                    try:
+                        await client.edit_message(chat_id, task.message_id, f"❌ Task {task.id}: Compression failed: {error_msg}")
+                        # Schedule error message for deletion after 60 seconds
+                        from utils.message_tracker import message_tracker
+                        await message_tracker.schedule_deletion(client, task, task.message_id, 60)
+                    except Exception: pass
+                return
+            
+            if part_paths:
+                # Upload zip parts
+                success = await upload_zip_parts(client, chat_id, part_paths, task, task_manager)
+                
+                # Clean up progress message after successful upload
+                if success and task and task.message_id:
+                    try:
+                        await client.delete_messages(chat_id, task.message_id)
+                        if task.message_id in task.temp_message_ids:
+                            task.temp_message_ids.remove(task.message_id)
+                            if task_manager: task_manager._save_task(task)
+                    except Exception as e:
+                        logger.warning(f"Failed to delete progress message after zip upload: {e}")
+                
+                # Clean up original file
+                try:
+                    os.remove(file_path)
+                    logger.info(f"Cleaned up original large file: {file_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to clean up original file: {e}")
+                
+                return
+    elif os.path.isdir(file_path):
+        # Handle directory upload by compressing
+        logger.info(f"Directory detected, compressing: {file_path}")
+        if task and task.message_id:
+            try:
+                await client.edit_message(chat_id, task.message_id, 
+                    f"📦 Task {task.id}: Compressing directory...\n"
+                    f"Directory: {os.path.basename(file_path)}")
+            except Exception: pass
+        
+        # Get all files in directory
+        file_list = []
+        for root, dirs, files in os.walk(file_path):
+            for file in files:
+                file_list.append(os.path.join(root, file))
+        
+        if not file_list:
+            logger.error(f"No files found in directory: {file_path}")
+            if task and task.message_id:
+                try:
+                    await client.edit_message(chat_id, task.message_id, f"❌ Task {task.id}: No files found in directory")
+                except Exception: pass
+            return
+        
+        # Compress directory
+        zip_name = f"{os.path.basename(file_path)}.zip"
+        part_paths, error = await stream_compress(file_list, zip_name, ZIP_PART_SIZE, chat_id, task, client, task_manager)
+        
+        if error or not part_paths:
+            error_msg = error or "Compression failed - no parts created"
+            logger.error(f"Directory compression failed: {error_msg}")
+            if task and task.message_id:
+                try:
+                    await client.edit_message(chat_id, task.message_id, f"❌ Task {task.id}: Compression failed: {error_msg}")
+                    # Schedule error message for deletion after 60 seconds
+                    from utils.message_tracker import message_tracker
+                    await message_tracker.schedule_deletion(client, task, task.message_id, 60)
+                except Exception: pass
+            return
+        
+        if part_paths:
+            # Upload zip parts
+            success = await upload_zip_parts(client, chat_id, part_paths, task, task_manager)
+            
+            # Clean up progress message after successful upload
+            if success and task and task.message_id:
+                try:
+                    await client.delete_messages(chat_id, task.message_id)
+                    if task.message_id in task.temp_message_ids:
+                        task.temp_message_ids.remove(task.message_id)
+                        if task_manager: task_manager._save_task(task)
+                except Exception as e:
+                    logger.warning(f"Failed to delete progress message after directory zip upload: {e}")
+            
+            # Clean up original directory
+            try:
+                import shutil
+                shutil.rmtree(file_path)
+                logger.info(f"Cleaned up original directory: {file_path}")
+            except Exception as e:
+                logger.warning(f"Failed to clean up original directory: {e}")
+            
+            return
+
+    # For files under size limit, proceed with normal upload
+    file_size = os.path.getsize(file_path) if os.path.isfile(file_path) else 0
     filename = os.path.basename(file_path)
     progress_msg_id = task.message_id if task else None    # Use a generic upload message if the specific one wasn't set or failed
     if progress_msg_id:
@@ -240,6 +387,21 @@ async def send_to_telegram(client, file_path: str, chat_id: int, task: Optional[
 
     try:
         logger.info(f"Task {task.id if task else 'N/A'}: Sending {file_path} ({format_size(file_size)}) to chat {chat_id}")
+        
+        # Verify file exists before attempting to send
+        if not os.path.exists(file_path):
+            error_msg = f"File not found: {file_path}"
+            logger.error(error_msg)
+            if progress_msg_id:
+                try:
+                    await client.edit_message(chat_id, progress_msg_id, f"❌ Error: {error_msg}")
+                    # Schedule error message for deletion after 60 seconds
+                    from utils.message_tracker import message_tracker
+                    if task:
+                        await message_tracker.schedule_deletion(client, task, progress_msg_id, 60)
+                except Exception: pass
+            return
+        
         await client.send_file(
             chat_id,
             file_path,
@@ -249,16 +411,24 @@ async def send_to_telegram(client, file_path: str, chat_id: int, task: Optional[
         )
         logger.info(f"Task {task.id if task else 'N/A'}: Successfully sent {filename} to chat {chat_id}")
 
-        # Delete the progress message AFTER successful upload
-        if progress_msg_id:
+        # Delete the progress message AFTER successful upload (but keep important messages)
+        if progress_msg_id and task:
             try:
-                await client.delete_messages(chat_id, progress_msg_id)
-                logger.debug(f"Task {task.id if task else 'N/A'}: Deleted progress message {progress_msg_id}")
-                if task and progress_msg_id in task.temp_message_ids:
+                # Only delete if this was a progress message, not an important status message
+                if progress_msg_id in task.temp_message_ids:
+                    await client.delete_messages(chat_id, progress_msg_id)
+                    logger.debug(f"Task {task.id}: Deleted progress message {progress_msg_id}")
                     task.temp_message_ids.remove(progress_msg_id)
                     if task_manager: task_manager._save_task(task)
             except Exception as e:
-                logger.warning(f"Task {task.id if task else 'N/A'}: Failed to delete progress message {progress_msg_id}: {e}")
+                logger.warning(f"Task {task.id}: Failed to delete progress message {progress_msg_id}: {e}")
+        elif progress_msg_id and not task:
+            # If no task, it's safe to delete the progress message
+            try:
+                await client.delete_messages(chat_id, progress_msg_id)
+                logger.debug(f"Deleted progress message {progress_msg_id} (no task)")
+            except Exception as e:
+                logger.warning(f"Failed to delete progress message {progress_msg_id}: {e}")
 
     except FloodWaitError as fwe:
          logger.error(f"Flood wait error during file upload: {fwe.seconds} seconds. Task {task.id if task else 'N/A'}")
@@ -398,9 +568,11 @@ async def delete_tracked_messages(client, task: Task, specific_ids: Optional[Lis
     Deletes messages tracked in a task.
     If specific_ids are provided, only those are deleted from chat and removed from task tracking.
     Otherwise, all messages currently in task.temp_message_ids are deleted and the list is cleared.
+    
+    This function is conservative and only deletes progress/temporary messages, not important status messages.
     """
     if not task:
-        logger.warning("delete_tracked_messages_for_task called with no task.")
+        logger.warning("delete_tracked_messages called with no task.")
         return
 
     ids_to_delete_from_chat = []
@@ -412,13 +584,35 @@ async def delete_tracked_messages(client, task: Task, specific_ids: Optional[Lis
             if msg_id in task.temp_message_ids: # Double check before removing
                 task.temp_message_ids.remove(msg_id)
     else:
-        ids_to_delete_from_chat = list(task.temp_message_ids) # Copy list for deletion
-        task.temp_message_ids.clear() # Clear all from tracking
+        # Only delete progress messages, keep important status messages
+        ids_to_delete_from_chat = []
+        ids_to_keep = []
+        
+        for msg_id in task.temp_message_ids:
+            try:
+                # Try to get the message to check its content
+                message = await client.get_messages(task.chat_id, ids=msg_id)
+                if message and message.text:
+                    # Keep important messages (quality selection, final status, etc.)
+                    if any(keyword in message.text.lower() for keyword in ['select', 'quality', 'completed', 'failed', 'error', 'success']):
+                        ids_to_keep.append(msg_id)
+                    else:
+                        ids_to_delete_from_chat.append(msg_id)
+                else:
+                    # If we can't get the message, it might already be deleted
+                    ids_to_delete_from_chat.append(msg_id)
+            except Exception as e:
+                logger.debug(f"Could not check message {msg_id}: {e}")
+                # If we can't check, delete it to avoid orphaned tracking
+                ids_to_delete_from_chat.append(msg_id)
+        
+        # Update the task's tracking to only keep important messages
+        task.temp_message_ids = ids_to_keep
 
     if ids_to_delete_from_chat:
         try:
             await client.delete_messages(task.chat_id, ids_to_delete_from_chat)
-            logger.info(f"Task {task.id}: Deleted messages: {ids_to_delete_from_chat} from chat {task.chat_id}")
+            logger.info(f"Task {task.id}: Deleted {len(ids_to_delete_from_chat)} progress messages from chat {task.chat_id}")
         except Exception as e:
             # Log warning but don't re-add to task.temp_message_ids as they are meant to be deleted.
-            logger.warning(f"Task {task.id}: Failed to delete messages {ids_to_delete_from_chat} from chat {task.chat_id}: {e}")
+            logger.warning(f"Task {task.id}: Failed to delete some messages from chat {task.chat_id}: {e}")

@@ -294,14 +294,25 @@ async def download_video_with_quality(task_manager, client, video_downloader, ta
             final_video_path = await video_downloader.download_video(
                 url,
                 format_id,
-                output_path=None,  # If your implementation requires output_path, set it accordingly
-                progress_callback=_progress_callback,
-                download_dir=session.user_dir
+                output_path=os.path.join(session.user_dir, f"{session.safe_title}.%(ext)s"),
+                progress_callback=_progress_callback
             )
             
             if not final_video_path or 'error' in final_video_path:
                 error_detail = final_video_path.get('error', 'Download failed, no path returned.') if isinstance(final_video_path, dict) else 'Download failed'
                 raise Exception(error_detail)
+            
+            # Extract the actual file path from the response
+            if isinstance(final_video_path, dict):
+                actual_path = final_video_path.get('path')
+                if not actual_path or not os.path.exists(actual_path):
+                    raise Exception(f"Downloaded video file not found: {actual_path}")
+                final_video_path = actual_path
+            elif isinstance(final_video_path, str):
+                if not os.path.exists(final_video_path):
+                    raise Exception(f"Downloaded video file not found: {final_video_path}")
+            else:
+                raise Exception(f"Invalid download response type: {type(final_video_path)}")
                 
             session.add_temp_file(final_video_path)
             

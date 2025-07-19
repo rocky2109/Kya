@@ -103,17 +103,25 @@ class VideoDownloader:
                 'retries': 10,
                 'fragment_retries': 15,
                 'socket_timeout': 30,
-                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/97.0.4692.71 Safari/537.36',
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/97.0.4692.71 Safari/537.36',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                     'Accept-Language': 'en-US,en;q=0.5',
+                    'Accept-Encoding': 'gzip, deflate',
                     'DNT': '1',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1',
                 },
                 'extractor_args': {
                     'youtube': {
-                        'player_client': ['android', 'web'],  # Try different clients
-                        'skip': ['hls', 'dash']  # Skip certain formats if they cause problems
+                        'player_client': ['android', 'web', 'ios', 'tv'],  # Try multiple clients including TV
+                        'skip': ['hls'],  # Skip HLS formats that might cause issues
+                        'player_skip': ['configs'],  # Skip config fetching
+                        'innertube_host': ['youtubei.googleapis.com', 'www.youtube.com'],  # Alternative hosts
+                    },
+                    'youtubetab': {
+                        'skip': ['webpage']
                     }
                 }
             }
@@ -143,12 +151,18 @@ class VideoDownloader:
                         # Provide more descriptive errors
                         if "This video is available for Premium users only" in error_msg:
                             return {'error': 'This video requires YouTube Premium'}
-                        elif "Sign in to confirm your age" in error_msg:
+                        elif "Sign in to confirm your age" in error_msg or "age-restricted" in error_msg:
                             return {'error': 'Video is age restricted and requires login'}
                         elif "private video" in error_msg:
                             return {'error': 'Video is private and cannot be accessed'}
                         elif "has been removed" in error_msg:
                             return {'error': 'Video has been removed from platform'}
+                        elif "Video unavailable" in error_msg:
+                            return {'error': 'Video is currently unavailable'}
+                        elif "HTTP Error 403" in error_msg:
+                            return {'error': 'Access forbidden - this might require authentication'}
+                        elif "HTTP Error 429" in error_msg:
+                            return {'error': 'Rate limited - please try again later'}
                         else:
                             return {'error': error_msg}
                     except Exception as e:
@@ -324,12 +338,15 @@ class VideoDownloader:
                 'extractor_retries': 5,  # Add retries for extractor failures
                 'file_access_retries': 5,  # Add retries for file access issues
                 'http_chunk_size': 10485760,  # 10MB chunks for better recovery
-                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/97.0.4692.71 Safari/537.36',
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/97.0.4692.71 Safari/537.36',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                     'Accept-Language': 'en-US,en;q=0.5',
+                    'Accept-Encoding': 'gzip, deflate',
                     'DNT': '1',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1',
                 },
                 'postprocessors': [{
                     'key': 'FFmpegVideoConvertor',
@@ -355,7 +372,8 @@ class VideoDownloader:
                 ydl_opts['extractor_args'] = {
                     'instagram': {
                         'skip_hls': True,  # Skip HLS formats which might cause issues
-                        'compatible_formats': True  # Use more compatible formats
+                        'compatible_formats': True,  # Use more compatible formats
+                        'api_version': 'v1'  # Use older API version
                     }
                 }
             
@@ -363,8 +381,13 @@ class VideoDownloader:
             if source == VideoSource.YOUTUBE:
                 ydl_opts['extractor_args'] = {
                     'youtube': {
-                        'player_client': ['android', 'web'],  # Try different clients
-                        'skip': ['hls', 'dash'] if format_id != 'best' else []  # Skip certain formats if they cause problems
+                        'player_client': ['android', 'web', 'ios', 'tv'],  # Try multiple clients including TV
+                        'skip': ['hls'] if format_id != 'best' else [],  # Skip HLS formats that might cause issues
+                        'player_skip': ['configs'],  # Skip config fetching
+                        'innertube_host': ['youtubei.googleapis.com', 'www.youtube.com'],  # Alternative hosts
+                    },
+                    'youtubetab': {
+                        'skip': ['webpage']
                     }
                 }
             
@@ -387,6 +410,12 @@ class VideoDownloader:
                         raise ValueError("This video has been removed.")
                     elif "not available in your country" in error_msg:
                         raise ValueError("This video is not available in your country.")
+                    elif "Video unavailable" in error_msg:
+                        raise ValueError("Video is currently unavailable.")
+                    elif "HTTP Error 403" in error_msg:
+                        raise ValueError("Access forbidden - authentication may be required.")
+                    elif "HTTP Error 429" in error_msg:
+                        raise ValueError("Rate limited - please try again later.")
                     else:
                         logger.error(f"[DOWNLOAD ERROR] {error_msg}")
                         raise
@@ -602,17 +631,23 @@ class VideoDownloader:
                 'retries': 10,
                 'fragment_retries': 15,
                 'skip_download': True,  # Just extract info
-                'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/604.1',
+                'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_6_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.6.1 Mobile/15E148 Safari/604.1',
                 'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/604.1',
+                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_6_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.6.1 Mobile/15E148 Safari/604.1',
                     'Accept': '*/*',
-                    'Accept-Language': 'en-US,en;q=0.5',
-                    'DNT': '1'
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'DNT': '1',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'none',
+                    'Sec-Fetch-User': '?1',
+                    'Upgrade-Insecure-Requests': '1'
                 },
                 'extractor_args': {
                     'instagram': {
                         'skip_hls': True,  # Skip HLS formats which might cause issues
-                        'compatible_formats': True  # Use more compatible formats
+                        'compatible_formats': True,  # Use more compatible formats
+                        'api_version': 'v1'  # Use older API version
                     }
                 }
             }
