@@ -383,13 +383,28 @@ class VideoDownloader:
             
             # Special handling for Instagram
             if source == VideoSource.INSTAGRAM:
-                ydl_opts['extractor_args'] = {
-                    'instagram': {
-                        'skip_hls': True,  # Skip HLS formats which might cause issues
-                        'compatible_formats': True,  # Use more compatible formats
-                        'api_version': 'v1'  # Use older API version
-                    }
-                }
+                ydl_opts.update({
+                    'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1',
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                        'Accept-Encoding': 'gzip, deflate, br',
+                        'X-Requested-With': 'XMLHttpRequest'
+                    },
+                    'extractor_args': {
+                        'instagram': {
+                            'skip_hls': False,  # Don't skip HLS, might be needed
+                            'compatible_formats': True,  # Use more compatible formats
+                            'api_version': '2',  # Try newer API version first
+                            'fallback_api': True,  # Enable API fallback
+                            'extract_flat': False,
+                            'alt_urls': True
+                        }
+                    },
+                    'sleep_interval': 2,
+                    'max_sleep_interval': 8
+                })
             
             # Special handling for YouTube
             if source == VideoSource.YOUTUBE:
@@ -637,33 +652,51 @@ class VideoDownloader:
     async def get_instagram_info(self, url: str, user_id: Optional[int] = None) -> Dict[str, Any]:
         """Special handling for Instagram links which may need different options"""
         try:
-            # Enhanced options specifically for Instagram
+            # Enhanced options specifically for Instagram with better authentication
             ydl_opts = {
                 'quiet': False,
                 'no_warnings': False,
                 'noplaylist': True,
-                'retries': 10,
-                'fragment_retries': 15,
+                'retries': 20,  # Increased retries for Instagram
+                'fragment_retries': 25,
                 'skip_download': True,  # Just extract info
-                'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_6_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.6.1 Mobile/15E148 Safari/604.1',
+                'socket_timeout': 30,
+                'read_timeout': 30,
+                # Updated user agent for better compatibility
+                'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1',
                 'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_6_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.6.1 Mobile/15E148 Safari/604.1',
-                    'Accept': '*/*',
+                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
                     'Accept-Language': 'en-US,en;q=0.9',
+                    'Accept-Encoding': 'gzip, deflate, br',
                     'DNT': '1',
                     'Sec-Fetch-Dest': 'document',
                     'Sec-Fetch-Mode': 'navigate',
                     'Sec-Fetch-Site': 'none',
                     'Sec-Fetch-User': '?1',
-                    'Upgrade-Insecure-Requests': '1'
+                    'Upgrade-Insecure-Requests': '1',
+                    'Cache-Control': 'max-age=0',
+                    'X-Requested-With': 'XMLHttpRequest'
                 },
                 'extractor_args': {
                     'instagram': {
-                        'skip_hls': True,  # Skip HLS formats which might cause issues
+                        'skip_hls': False,  # Don't skip HLS, might be needed
                         'compatible_formats': True,  # Use more compatible formats
-                        'api_version': 'v1'  # Use older API version
+                        'include_onlyonce': False,  # Include all formats
+                        'alt_urls': True,  # Try alternative URLs
+                        'extract_flat': False,  # Full extraction
+                        'api_version': '2',  # Try newer API version first
+                        'fallback_api': True  # Enable API fallback
                     }
-                }
+                },
+                # Additional options for better authentication and stability
+                'sleep_interval': 2,  # Sleep between requests
+                'max_sleep_interval': 8,
+                'sleep_interval_subtitles': 2,
+                'cookiesfrombrowser': None,  # Don't auto-load browser cookies
+                'call_home': False,  # Disable analytics
+                'extract_flat': False,  # Ensure full extraction
+                'playlist_items': '1',  # Only first item if it's a playlist
             }
             
             # Use user-specific cookies if available
@@ -671,6 +704,9 @@ class VideoDownloader:
             if cookies_file and os.path.exists(cookies_file):
                 ydl_opts['cookiefile'] = cookies_file
                 logger.info(f"Using cookies file for user {user_id}: {cookies_file}")
+            else:
+                # Log when no cookies are available for Instagram
+                logger.warning(f"No cookies available for Instagram download for user {user_id}. This may cause authentication errors.")
             
             # Log the URL being processed
             logger.info(f"Processing Instagram URL: {url}")
@@ -681,11 +717,92 @@ class VideoDownloader:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     return ydl.extract_info(url, download=False)
             
-            info = await loop.run_in_executor(None, _extract_info)
+            try:
+                info = await loop.run_in_executor(None, _extract_info)
+            except Exception as extract_error:
+                # Try fallback with simpler options if the main extraction fails
+                logger.warning(f"Instagram primary extraction failed, trying fallback method: {extract_error}")
+                
+                # Fallback with minimal options
+                fallback_opts = {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'noplaylist': True,
+                    'retries': 5,
+                    'skip_download': True,
+                    'socket_timeout': 15,
+                    'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'format': 'best',
+                    'extractor_args': {
+                        'instagram': {
+                            'skip_hls': True,
+                            'compatible_formats': True
+                        }
+                    }
+                }
+                
+                # Use cookies if available
+                cookies_file = self._get_cookies_for_user(user_id)
+                if cookies_file and os.path.exists(cookies_file):
+                    fallback_opts['cookiefile'] = cookies_file
+                    logger.info(f"Fallback using cookies file for user {user_id}: {cookies_file}")
+                
+                def _fallback_extract():
+                    with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                        return ydl.extract_info(url, download=False)
+                
+                try:
+                    logger.info(f"Attempting fallback extraction for Instagram URL: {url}")
+                    info = await loop.run_in_executor(None, _fallback_extract)
+                except Exception as fallback_error:
+                    # Enhanced error handling for Instagram-specific issues
+                    error_msg = str(extract_error).lower()
+                    fallback_msg = str(fallback_error).lower()
+                    
+                    # Use the more descriptive error message
+                    combined_error = f"{extract_error} | Fallback: {fallback_error}"
+                    
+                    if any(keyword in error_msg or keyword in fallback_msg for keyword in ["rate-limit", "login required", "requested content is not available"]):
+                        logger.error(f"Instagram authentication error: {combined_error}")
+                        return {
+                            'error': 'Instagram authentication required. Please upload your Instagram cookies using /setcookies command for better success rates.',
+                            'error_type': 'authentication',
+                            'needs_cookies': True
+                        }
+                    elif any(keyword in error_msg or keyword in fallback_msg for keyword in ["not available", "private", "deleted"]):
+                        logger.error(f"Instagram content not available: {combined_error}")
+                        return {
+                            'error': 'Instagram content is not available. It may be private, deleted, or region-restricted.',
+                            'error_type': 'content_unavailable'
+                        }
+                    elif any(keyword in error_msg or keyword in fallback_msg for keyword in ["403", "forbidden"]):
+                        logger.error(f"Instagram access forbidden: {combined_error}")
+                        return {
+                            'error': 'Access to this Instagram content is forbidden. Try uploading cookies with /setcookies.',
+                            'error_type': 'authentication'
+                        }
+                    elif any(keyword in error_msg or keyword in fallback_msg for keyword in ["429", "too many requests"]):
+                        logger.error(f"Instagram rate limited: {combined_error}")
+                        return {
+                            'error': 'Instagram rate limit reached. Please try again later or upload cookies with /setcookies.',
+                            'error_type': 'rate_limit'
+                        }
+                    elif any(keyword in error_msg or keyword in fallback_msg for keyword in ["network", "timeout", "connection"]):
+                        logger.error(f"Instagram network error: {combined_error}")
+                        return {
+                            'error': 'Network error accessing Instagram. Please try again.',
+                            'error_type': 'network_error'
+                        }
+                    else:
+                        logger.error(f"Instagram extraction error: {combined_error}")
+                        return {
+                            'error': f'Instagram download failed: {str(extract_error)[:100]}{"..." if len(str(extract_error)) > 100 else ""}',
+                            'error_type': 'extraction_failed'
+                        }
             
             if not info:
                 logger.error("No info returned from yt-dlp for Instagram")
-                return {'error': 'Failed to extract video information'}
+                return {'error': 'Failed to extract video information from Instagram'}
             
             # Process formats
             formats = []

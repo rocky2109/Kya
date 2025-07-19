@@ -140,7 +140,7 @@ async def handle_video_queue(task_manager, client, video_downloader, user_stats_
             initial_processing_msg = await send_tracked_message(client, task.chat_id, initial_processing_msg_text, task)
 
             logger.debug(f"Task {task.id}: Getting video info for {url}")
-            video_info = await video_downloader.get_video_info(url)
+            video_info = await video_downloader.get_video_info(url, task.chat_id)  # Pass user_id for cookies
 
             if initial_processing_msg:
                 await delete_tracked_messages(client, task, specific_ids=[initial_processing_msg.id])
@@ -148,9 +148,35 @@ async def handle_video_queue(task_manager, client, video_downloader, user_stats_
 
             if 'error' in video_info:
                 error_msg = video_info['error']
+                error_type = video_info.get('error_type', 'unknown')
+                
+                # Provide user-friendly error message based on error type
+                if error_type == 'authentication':
+                    user_error_msg = (
+                        f"❌ Authentication Required\n\n"
+                        f"🔒 This content requires login/cookies.\n\n"
+                        f"💡 **Solution**: Upload your cookies using `/setcookies`\n"
+                        f"This enables downloading:\n"
+                        f"• Private content\n"
+                        f"• Age-restricted videos\n"
+                        f"• Content without rate limits\n\n"
+                        f"📖 Use `/help` for setup instructions."
+                    )
+                elif error_type == 'content_unavailable':
+                    user_error_msg = (
+                        f"❌ Content Not Available\n\n"
+                        f"📵 This content cannot be accessed:\n"
+                        f"• May be private or deleted\n"
+                        f"• Could be region-restricted\n"
+                        f"• Account might be suspended\n\n"
+                        f"Try a different link or check availability."
+                    )
+                else:
+                    user_error_msg = f"❌ Error: {error_msg}"
+                
                 logger.error(f"Task {task.id}: Error getting video info: {error_msg}")
                 task.update_status(TaskStatus.FAILED, f"Video info error: {error_msg}")
-                await send_tracked_message(client, task.chat_id, f"❌ Error: {error_msg}", task=task, auto_delete=60) 
+                await send_tracked_message(client, task.chat_id, user_error_msg, task=task, auto_delete=120) 
                 task_manager._save_task(task)
                 task_manager.video_queue.task_done()
                 task_done_called = True
@@ -216,11 +242,18 @@ async def handle_video_queue(task_manager, client, video_downloader, user_stats_
                 task.update_status(TaskStatus.FAILED, f"Queue error: {str(outer_e)}")
                 task_manager._save_task(task)
                 await send_tracked_message(client, task.chat_id, f"❌ An unexpected error occurred: {str(outer_e)}", task=task, auto_delete=60)
-                await delete_tracked_messages(client, task) 
+                await delete_tracked_messages(client, task)
+            # Ensure task_done is called
+            if not task_done_called:
+                task_manager.video_queue.task_done()
+                task_done_called = True
         finally:
-            if task and not task_done_called and task.status not in [TaskStatus.AWAITING_USER_INPUT, TaskStatus.PROCESSING_SUBTASK]:
-                if task.status in (TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.COMPLETED): 
-                     await delete_tracked_messages(client, task)
+            # Clean up tracked messages for completed/failed/cancelled tasks
+            if task and task.status in (TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.COMPLETED): 
+                await delete_tracked_messages(client, task)
+            
+            # Ensure task_done() is always called exactly once
+            if not task_done_called:
                 task_manager.video_queue.task_done()
 
 
@@ -241,7 +274,44 @@ async def download_video_with_quality(task_manager, client, video_downloader, ta
             await delete_tracked_messages(client, task, specific_ids=[quality_options_message_id])
 
         url = task.data 
-        video_info = await video_downloader.get_video_info(url) 
+        video_info = await video_downloader.get_video_info(url, task.chat_id)  # Pass user_id for cookies
+        
+        # Check if video_info contains an error
+        if 'error' in video_info:
+            error_msg = video_info['error']
+            error_type = video_info.get('error_type', 'unknown')
+            
+            # Provide user-friendly error message based on error type
+            if error_type == 'authentication':
+                user_error_msg = (
+                    f"❌ Instagram Download Failed\n\n"
+                    f"🔒 Authentication required for this Instagram content.\n\n"
+                    f"💡 **Solution**: Upload your Instagram cookies using `/setcookies`\n"
+                    f"This will allow you to download:\n"
+                    f"• Private posts and stories\n"
+                    f"• Content without rate limits\n"
+                    f"• Better success rates\n\n"
+                    f"📖 Use `/help` for cookie setup instructions."
+                )
+            elif error_type == 'content_unavailable':
+                user_error_msg = (
+                    f"❌ Content Not Available\n\n"
+                    f"📵 This Instagram content is not accessible:\n"
+                    f"• May be private or deleted\n"
+                    f"• Could be region-restricted\n"
+                    f"• Account might be suspended\n\n"
+                    f"Try a different link or check if the content is still available."
+                )
+            else:
+                user_error_msg = f"❌ Download failed: {error_msg}"
+            
+            logger.error(f"Task {task_id}: {error_msg}")
+            task.update_status(TaskStatus.FAILED, error_msg)
+            await send_tracked_message(client, task.chat_id, user_error_msg, task=task, auto_delete=120)
+            task_manager._save_task(task)
+            await delete_tracked_messages(client, task) 
+            return
+        
         title = video_info.get('title', 'Video')
         selected_format = next((f for f in video_info.get('formats', []) if f['format_id'] == format_id), None)
         

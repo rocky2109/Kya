@@ -8,6 +8,7 @@ from typing import List, Tuple, Optional
 
 from telethon.errors import FloodWaitError, TimeoutError
 # Note: ConnectionError and NetworkError are built-in Python exceptions, not from telethon
+# Note: ConnectionError and NetworkError are built-in Python exceptions, not from telethon
 from utils.formatting import format_size, format_time
 
 logger = logging.getLogger(__name__)
