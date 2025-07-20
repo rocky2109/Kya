@@ -462,7 +462,7 @@ async def handle_playlist_queue_wrapper():
 @client.on(events.NewMessage(pattern='/start'))
 async def start_handler(event):
     await event.respond(
-        "👋 Welcome to Zakulika AIO Downloader!\n\n"
+        "👋 Welcome to Media Downloader!\n\n"
         "I can download files from direct links, torrents, and magnet links.\n\n"
         "📤 To download a file, simply:\n"
         "• Send me a direct download link\n"
@@ -481,7 +481,7 @@ async def start_handler(event):
         "• /tasks - View your active tasks\n"
         "• /status - Check your usage stats\n"
         "• /cancel <task_id> - Cancel a task\n\n"
-        "⚡ Bot by @ZakulikaCompressor_bot"
+        "⚡ Bot by @Chosen_onex_bot"
     )
 
 @client.on(events.NewMessage(pattern='/help'))
@@ -489,7 +489,7 @@ async def help_handler(event):
     user_id = event.sender_id
     
     help_text = (
-        "📚 **Zakulika AIO Downloader Bot Help**\n\n"
+        "📚 **Media Downloader Bot Help**\n\n"
         "🤖 **About:**\n"
         "This bot downloads files from various sources and sends them to Telegram.\n\n"
         "✨ **Features:**\n"
